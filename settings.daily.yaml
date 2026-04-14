@@ -1,0 +1,215 @@
+project:
+  name: "oil_decision_engine_daily_paper"
+  mode: "paper_trading"
+
+runtime:
+  live_order_time_in_force: "good_till_cancelled"
+  live_exit_order_time_in_force: "good_till_cancelled"
+  live_exit_execution_mode: "balanced"
+
+  execution_mode: "simulation"
+
+  poll_interval_seconds: 45
+  request_timeout_seconds: 20
+  trade_cooldown_seconds: 90
+  min_time_between_trades_seconds: 300
+
+  kalshi_retry_attempts: 4
+  kalshi_retry_backoff_seconds: 2.0
+  kalshi_page_pause_seconds: 0.25
+
+  price_cache_seconds: 30
+  vol_cache_seconds: 60
+  summary_interval_seconds: 90
+
+  top_n_display: 5
+  market_fetch_limit: 100
+  max_market_pages: 4
+  max_markets_to_fetch_orderbook: 0
+
+  max_alerts_per_cycle: 1
+  alert_edge_threshold: 0.03
+  alert_distance_threshold: 40
+  alert_cooldown_seconds: 600
+  alert_min_edge_improvement: 0.02
+
+  order_reconciliation_timeout_seconds: 600
+  simulated_reconciliation_fill_seconds: 5
+  order_material_contract_change: 1
+  order_material_allocation_change: 2.0
+  order_material_ask_change: 0.01
+
+  runtime_state_file: "./logs/daily_execution_state.json"
+  persist_every_cycle: true
+
+  live_max_entry_contracts: 1
+  live_order_post_only: false
+  live_order_cancel_on_pause: true
+
+paper_trading:
+  positions_file: "./logs/daily_paper_positions.json"
+  starting_cash: 50.0
+  source_label: "simulation_daily"
+
+contract:
+  venue: "kalshi"
+  contract_type: "oil_threshold"
+  fallback_resolution_mode: "today_11pm_et"
+
+model:
+  annualized_volatility_fallback: 0.28
+  drift: 0.0
+  drift_window: 20
+  min_annualized_drift: -0.35
+  max_annualized_drift: 0.35
+
+  monte_carlo_paths: 5000
+  touch_paths: 2500
+  touch_steps: 50
+
+  blend_terminal_weight: 0.80
+  blend_touch_weight: 0.20
+  touch_prob_cap: 0.92
+
+  vol_interval: "1min"
+  vol_lookback_bars: 180
+  vol_short_window: 20
+  vol_medium_window: 90
+
+  vol_short_weight: 0.65
+  vol_medium_weight: 0.35
+
+  vol_trading_periods_per_year: 98280
+
+  min_annualized_vol: 0.10
+  max_annualized_vol: 1.25
+
+  prob_floor: 0.001
+  prob_cap: 0.999
+
+filters:
+  strike_band_below: 120
+  strike_band_above: 120
+
+  max_abs_distance: 45
+
+  max_yes_spread: 0.10
+  max_no_spread: 0.10
+
+  require_two_sided_quotes: true
+
+  min_bid: 0.01
+  min_ask: 0.01
+
+  max_yes_no_ask_sum: 1.08
+
+  max_overround: 0.08
+  hard_skip_overround: 0.10
+  near_executable_overround: 0.11
+
+decision:
+  fee_buffer: 0.01
+  spread_buffer: 0.005
+  safety_buffer: 0.01
+
+  buy_threshold: 0.07
+  min_edge_to_trade: 0.07
+
+  strict_live_entry_edge: 0.14
+  strict_live_entry_prob: 0.58
+  strict_live_entry_high_conf_only: false
+
+  allowed_confidence:
+    - HIGH
+    - MEDIUM
+
+  max_risk_per_trade: 0.20
+  max_open_trades: 1
+
+  dynamic_threshold_enabled: true
+  dynamic_threshold_base: 0.06
+  dynamic_threshold_overround_mult: 1.25
+
+  clean_market_aggressive_entry_enabled: true
+  clean_market_max_overround: 0.05
+  clean_market_min_edge: 0.09
+
+portfolio:
+  starting_capital: 50.0
+
+  max_initial_deploy_fraction: 0.20
+  max_total_deploy_fraction: 0.35
+  max_single_trade_fraction: 0.20
+
+  reserve_cash_fraction: 0.55
+
+  min_trade_dollars: 1.0
+  min_edge_to_add: 0.08
+
+  enable_scaling_in: false
+  enable_partial_take_profit: false
+
+  advisory_only: false
+
+  alert_cooldown_seconds: 600
+  min_edge_improvement_to_rotate: 0.08
+
+  allow_multiple_positions: false
+  strict_single_event_mode: true
+  allow_same_event_same_side_add: false
+
+  allowed_entry_trading_phases:
+    - ACTIVE_TRADING
+    - CLOSE_ONLY
+
+  allowed_entry_trading_phases_when_flat:
+    - ACTIVE_TRADING
+    - CLOSE_ONLY
+
+  max_capital_deploy: 50.0
+  max_dollars_per_trade: 8.0
+  max_contracts_per_trade: 4
+  stop_trading_if_balance_below: 5.0
+
+exit:
+  hard_stop_loss_pct: -0.08
+  early_stop_loss_pct: -0.04
+
+  profit_lock_pct: 0.08
+  soft_profit_lock_pct: 0.05
+
+  edge_collapse_threshold: -0.01
+  weak_edge_threshold: 0.02
+  fair_value_drop_threshold: -0.03
+
+  allow_not_tradable_red_exit: true
+  allow_non_executable_red_exit: false
+
+  min_profit_exit_pct: 0.015
+  max_exit_spread: 0.025
+
+trading_phases:
+  observe_only_above_hours: 36
+  active_trading_above_hours: 6
+  close_only_below_hours: 6
+
+kalshi:
+  api_base: "https://api.elections.kalshi.com/trade-api/v2"
+
+  series_ticker: "KXWTID"
+  market_slug: "wti-oil-daily-range"
+
+  event_ticker: null
+  exact_market_ticker: null
+
+  status: "open"
+
+logging:
+  log_file: "./logs/daily_oil_decision_log.csv"
+  trade_log_file: "./logs/daily_oil_trade_log.csv"
+  settlement_log_file: "./logs/daily_oil_settlement_log.csv"
+
+  engine_runtime_log: "./logs/daily_engine_runtime.log"
+
+  validation_output_dir: "./logs/daily_validation"
+  open_positions_file: "./logs/daily_open_positions.csv"
