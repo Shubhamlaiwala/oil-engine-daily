@@ -196,9 +196,8 @@ trading_phases:
 kalshi:
   api_base: "https://api.elections.kalshi.com/trade-api/v2"
 
-  series_ticker: "KXWTID"
-  market_slug: "wti-oil-daily-range"
-
+  series_ticker: "KXWTI"
+  market_slug: "wti-oil-on-day"
   event_ticker: null
   exact_market_ticker: null
 
