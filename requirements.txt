@@ -1,0 +1,8 @@
+requests
+pandas
+numpy
+pyyaml
+scipy
+yfinance
+cryptography
+kalshi_python_sync
