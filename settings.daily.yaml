@@ -103,9 +103,9 @@ filters:
 
   max_yes_no_ask_sum: 1.08
 
-  max_overround: 0.08
-  hard_skip_overround: 0.10
-  near_executable_overround: 0.11
+  max_overround: 0.10
+  hard_skip_overround: 0.12
+  near_executable_overround: 0.13
 
 decision:
   fee_buffer: 0.01
@@ -113,9 +113,9 @@ decision:
   safety_buffer: 0.01
 
   buy_threshold: 0.07
-  min_edge_to_trade: 0.07
+  min_edge_to_trade: 0.10
 
-  strict_live_entry_edge: 0.14
+  strict_live_entry_edge: 0.12
   strict_live_entry_prob: 0.58
   strict_live_entry_high_conf_only: false
 
@@ -172,21 +172,21 @@ portfolio:
   stop_trading_if_balance_below: 5.0
 
 exit:
-  hard_stop_loss_pct: -0.08
-  early_stop_loss_pct: -0.04
+  hard_stop_loss_pct: -0.18
+  early_stop_loss_pct: -0.10
 
-  profit_lock_pct: 0.08
-  soft_profit_lock_pct: 0.05
+  profit_lock_pct: 0.20
+  soft_profit_lock_pct: 0.12
 
-  edge_collapse_threshold: -0.01
-  weak_edge_threshold: 0.02
-  fair_value_drop_threshold: -0.03
+  edge_collapse_threshold: -0.05
+  weak_edge_threshold: 0.01
+  fair_value_drop_threshold: -0.08
 
-  allow_not_tradable_red_exit: true
+  allow_not_tradable_red_exit: false
   allow_non_executable_red_exit: false
 
-  min_profit_exit_pct: 0.015
-  max_exit_spread: 0.025
+  min_profit_exit_pct: 0.05
+  max_exit_spread: 0.04
 
 trading_phases:
   observe_only_above_hours: 36
