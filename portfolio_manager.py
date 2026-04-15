@@ -652,6 +652,11 @@ def _candidate_score(row: pd.Series, config: Dict[str, Any]) -> float:
     score *= _overround_sizing_factor(overround, market_too_wide)
     score *= _distance_sizing_factor(distance_abs)
     score *= _edge_sizing_factor(edge, min_edge)
+
+    entry_style = safe_upper(safe_row_value(row, "entry_style", ""))
+    if entry_style in {"LIMIT_MAKER", "WATCHLIST_LIMIT", "MAKER_TARGET"} and edge >= max(0.045, min_edge * 0.75):
+        score += 0.01
+
     return float(score)
 
 
@@ -744,10 +749,52 @@ def _same_event_scope(held_row: pd.Series, candidate_row: pd.Series) -> bool:
 
 
 
+def _get_hold_to_expiry_hours(config: Dict[str, Any]) -> float:
+    exit_cfg = config.get("exit", {}) or {}
+    return float(exit_cfg.get("hold_to_expiry_hours_left", 2.0))
+
+
+def _prefer_settlement_over_roll(config: Dict[str, Any]) -> bool:
+    daily_cfg = config.get("daily_behavior", {}) or {}
+    return bool(daily_cfg.get("prefer_settlement_over_roll", True))
+
+
+def _held_hours_left(held_row: pd.Series) -> Optional[float]:
+    hours_left = _safe_float(safe_row_value(held_row, "hours_left", None), None)
+    if hours_left is None:
+        return None
+    return float(hours_left)
+
+
+def _held_is_near_settlement(held_row: pd.Series, config: Dict[str, Any]) -> bool:
+    hours_left = _held_hours_left(held_row)
+    if hours_left is None:
+        return False
+    return hours_left <= _get_hold_to_expiry_hours(config)
+
+
+def _held_is_out_of_scope(held_row: pd.Series, candidate_row: Optional[pd.Series]) -> bool:
+    if candidate_row is None:
+        return False
+    return not _same_event_scope(held_row, candidate_row)
+
+
 def _should_hold_strict(held_row: pd.Series, candidate_row: Optional[pd.Series], config: Dict[str, Any]) -> bool:
     if held_row is None:
         return False
+
+    # Daily-engine profit rule:
+    # if we already hold a position and it is close to settlement, do not rotate it
+    # out just because the engine is now evaluating a newer event.
+    if _prefer_settlement_over_roll(config) and _held_is_near_settlement(held_row, config):
+        return True
+
     if candidate_row is None:
+        return True
+
+    # If the held position is outside the currently evaluated event scope, prefer
+    # settlement over rotation for daily binaries.
+    if _prefer_settlement_over_roll(config) and _held_is_out_of_scope(held_row, candidate_row):
         return True
 
     held_decision_state = safe_upper(safe_row_value(held_row, "decision_state", ""))
@@ -781,9 +828,14 @@ def _should_hold_strict(held_row: pd.Series, candidate_row: Optional[pd.Series],
     return False
 
 
-
 def _should_rotate_strict(held_row: pd.Series, candidate_row: Optional[pd.Series], config: Dict[str, Any]) -> bool:
     if held_row is None or candidate_row is None:
+        return False
+
+    if _prefer_settlement_over_roll(config) and _held_is_near_settlement(held_row, config):
+        return False
+
+    if _prefer_settlement_over_roll(config) and _held_is_out_of_scope(held_row, candidate_row):
         return False
 
     rotation_cfg = config.get("portfolio_rotation", {}) or {}
@@ -805,7 +857,6 @@ def _should_rotate_strict(held_row: pd.Series, candidate_row: Optional[pd.Series
     if held_decision_state == "ACTIONABLE" and held_edge >= held_weak_threshold:
         return False
     return True
-
 
 
 def _pick_best_candidate(df: pd.DataFrame) -> Optional[pd.Series]:
@@ -1202,7 +1253,25 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
     tradable_candidates_count = len(tradable_df)
     logging.info("Filtered tradable opportunities count: %s", tradable_candidates_count)
 
+    scored_live = _score_live_positions_against_ranked(live, ranked)
+    best_held = _pick_best_candidate(scored_live)
+
     if tradable_df.empty:
+        if _single_position_mode_enabled(config) and best_held is not None:
+            hold_reason = "No new tradable candidates, but an existing held position remains active."
+            if _prefer_settlement_over_roll(config) and _held_is_near_settlement(best_held, config):
+                hold_reason = "No new tradable candidates, and held daily position is inside the hold-to-expiry window."
+            return _build_hold_plan(
+                held_row=best_held,
+                capital=capital,
+                available_cash=available_cash,
+                reserve_cash_target=reserve_cash_target,
+                deployable_cash=deployable_cash,
+                reason=_append_watchlist_context(hold_reason, watchlist_candidates_count),
+                tradable_candidates_count=0,
+                watchlist_candidates_count=watchlist_candidates_count,
+            )
+
         return PortfolioPlan(
             recommendation="WAIT",
             reason=_append_watchlist_context("No tradable candidates.", watchlist_candidates_count),
@@ -1249,8 +1318,6 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
         ),
     )
 
-    scored_live = _score_live_positions_against_ranked(live, ranked)
-    best_held = _pick_best_candidate(scored_live)
     best_candidate = _pick_best_candidate(tradable_df)
 
     if _single_position_mode_enabled(config) and best_held is not None:
@@ -1262,6 +1329,11 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
         )
 
         if _should_hold_strict(best_held, best_candidate, config):
+            hold_reason = "Held position remains competitive versus current opportunities."
+            if _prefer_settlement_over_roll(config) and _held_is_near_settlement(best_held, config):
+                hold_reason = "Held daily position is within the hold-to-expiry window; keep it through settlement."
+            elif _prefer_settlement_over_roll(config) and _held_is_out_of_scope(best_held, best_candidate):
+                hold_reason = "Held position is outside the current event scope, but daily settlement is preferred over forced rotation."
             return _build_hold_plan(
                 held_row=best_held,
                 capital=capital,
@@ -1269,7 +1341,7 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
                 reserve_cash_target=reserve_cash_target,
                 deployable_cash=deployable_cash,
                 reason=_append_watchlist_context(
-                    "Held position remains competitive versus current opportunities.",
+                    hold_reason,
                     watchlist_candidates_count,
                 ),
                 tradable_candidates_count=tradable_candidates_count,
