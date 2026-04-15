@@ -868,6 +868,7 @@ def monitor_open_positions(open_positions_df: pd.DataFrame, ranked_df: pd.DataFr
 
     return monitored
 
+
 def evaluate_exit_rules(monitored_positions_df, config):
     import numpy as np
     import pandas as pd
@@ -878,23 +879,11 @@ def evaluate_exit_rules(monitored_positions_df, config):
     df = monitored_positions_df.copy()
     exit_cfg = config.get("exit", {}) or {}
 
-    hard_stop_loss_pct = float(exit_cfg.get("hard_stop_loss_pct", -0.10))
-    early_stop_loss_pct = float(exit_cfg.get("early_stop_loss_pct", -0.06))
-    profit_lock_pct = float(exit_cfg.get("profit_lock_pct", 0.20))
-    soft_profit_lock_pct = float(exit_cfg.get("soft_profit_lock_pct", 0.14))
-    edge_collapse_threshold = float(exit_cfg.get("edge_collapse_threshold", -0.02))
-    weak_edge_threshold = float(exit_cfg.get("weak_edge_threshold", 0.02))
-    fair_value_drop_threshold = float(exit_cfg.get("fair_value_drop_threshold", -0.02))
-    allow_not_tradable_red_exit = bool(exit_cfg.get("allow_not_tradable_red_exit", True))
-    allow_non_executable_red_exit = bool(exit_cfg.get("allow_non_executable_red_exit", True))
-    allow_stagnation_exit = bool(exit_cfg.get("allow_stagnation_exit", False))
-    stagnation_min_profit = float(exit_cfg.get("stagnation_min_profit", 0.02))
-    min_profit_exit_pct = float(exit_cfg.get("min_profit_exit_pct", 0.02))
-    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.03))
-
-    cheap_contract_price_threshold = float(exit_cfg.get("cheap_contract_price_threshold", 0.05))
-    cheap_contract_absolute_stop_loss = float(exit_cfg.get("cheap_contract_absolute_stop_loss", 0.02))
-    cheap_contract_soft_stop_loss = float(exit_cfg.get("cheap_contract_soft_stop_loss", 0.015))
+    hold_to_expiry_enabled = bool(exit_cfg.get("hold_to_expiry_enabled", True))
+    hold_to_expiry_hours_left = float(exit_cfg.get("hold_to_expiry_hours_left", 2.0))
+    emergency_stop_loss_pct = float(exit_cfg.get("emergency_stop_loss_pct", -0.85))
+    emergency_price_move = float(exit_cfg.get("emergency_price_move", -0.35))
+    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.04))
 
     def _safe_float(v, default=np.nan):
         try:
@@ -959,31 +948,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
             return "NO"
         return ""
 
-    def _held_executable_now(row, held_side):
-        executable_yes_now = _safe_bool(row.get("executable_yes_now"))
-        executable_no_now = _safe_bool(row.get("executable_no_now"))
-        if held_side == "YES":
-            return executable_yes_now
-        if held_side == "NO":
-            return executable_no_now
-        return executable_yes_now or executable_no_now
-
-    def _current_edge_from_row(row, held_side):
-        current_edge = _safe_float(row.get("current_edge"), np.nan)
-        if pd.notna(current_edge):
-            return current_edge
-        selected_edge = _safe_float(row.get("selected_edge"), np.nan)
-        if pd.notna(selected_edge):
-            return selected_edge
-        edge_yes = _safe_float(row.get("edge_yes"), np.nan)
-        edge_no = _safe_float(row.get("edge_no"), np.nan)
-        if held_side == "YES" and pd.notna(edge_yes):
-            return edge_yes
-        if held_side == "NO" and pd.notna(edge_no):
-            return edge_no
-        candidates = [x for x in [edge_yes, edge_no] if pd.notna(x)]
-        return max(candidates) if candidates else np.nan
-
     def _exit_prices_from_row(row, held_side):
         if held_side == "YES":
             bid_price = _safe_float(row.get("selected_bid", row.get("current_bid", row.get("bid_yes"))), np.nan)
@@ -996,48 +960,22 @@ def evaluate_exit_rules(monitored_positions_df, config):
             ask_price = _safe_float(row.get("selected_ask", row.get("current_ask")), np.nan)
         return bid_price, ask_price
 
-    def _risk_exit_allowed(spread):
-        return not (pd.notna(spread) and spread > max_exit_spread)
-
-    def _profit_exit_allowed(pnl_ratio, spread):
-        if pd.notna(pnl_ratio) and pnl_ratio < min_profit_exit_pct:
-            return False
-        if pd.notna(spread) and spread > max_exit_spread:
-            return False
-        return True
-
-    def _risk_gate_reason(spread):
-        if pd.notna(spread) and spread > max_exit_spread:
-            return f"SPREAD_GATE_BLOCKED spread={spread:.4f} > max_exit_spread={max_exit_spread:.4f}"
-        return ""
-
-    def _profit_gate_reason(pnl_ratio, spread):
-        reasons = []
-        if pd.notna(pnl_ratio) and pnl_ratio < min_profit_exit_pct:
-            reasons.append(f"MIN_PROFIT_GATE_BLOCKED pnl_ratio={pnl_ratio:.4f} < min_profit_exit_pct={min_profit_exit_pct:.4f}")
-        if pd.notna(spread) and spread > max_exit_spread:
-            reasons.append(f"SPREAD_GATE_BLOCKED spread={spread:.4f} > max_exit_spread={max_exit_spread:.4f}")
-        return " | ".join(reasons)
-
     def _rule_eval(row):
         contracts = _safe_float(row.get("contracts"), 0.0)
         current_price = _safe_float(row.get("current_position_price", row.get("current_price")), np.nan)
         entry_price = _resolve_effective_entry_price(row)
+        hours_left = _safe_float(row.get("hours_left"), np.nan)
+        held_side = _safe_side_from_row(row)
 
         held_state = str(row.get("held_decision_state", "") or "").strip().upper()
         exit_reason_existing = str(row.get("exit_reason", "") or "").strip()
         should_exit_existing = _safe_bool(row.get("should_exit"))
-        decision_state = str(row.get("decision_state", "") or "").strip().upper()
-
-        held_side = _safe_side_from_row(row)
-        held_executable_now = _held_executable_now(row, held_side)
-        current_edge = _current_edge_from_row(row, held_side)
-        fair_gap = _safe_float(row.get("fair_price_gap"), np.nan)
 
         pnl_ratio = _safe_float(row.get("pnl_pct"), np.nan)
-        unrealized_pnl = _safe_float(row.get("unrealized_pnl"), np.nan)
         if pd.isna(pnl_ratio) and pd.notna(entry_price) and entry_price > 0 and pd.notna(current_price):
             pnl_ratio = (current_price - entry_price) / entry_price
+
+        unrealized_pnl = _safe_float(row.get("unrealized_pnl"), np.nan)
         if pd.isna(unrealized_pnl) and pd.notna(entry_price) and entry_price > 0 and pd.notna(current_price) and pd.notna(contracts) and contracts > 0:
             unrealized_pnl = (current_price - entry_price) * contracts
 
@@ -1045,14 +983,15 @@ def evaluate_exit_rules(monitored_positions_df, config):
         if pd.notna(entry_price) and pd.notna(current_price):
             price_move = current_price - entry_price
 
-        is_cheap_contract = pd.notna(entry_price) and entry_price <= cheap_contract_price_threshold
+        current_edge = _safe_float(row.get("current_edge"), np.nan)
+        fair_gap = _safe_float(row.get("fair_price_gap"), np.nan)
 
         bid_price, ask_price = _exit_prices_from_row(row, held_side)
         spread = ask_price - bid_price if pd.notna(bid_price) and pd.notna(ask_price) else np.nan
 
         out = {
             "should_exit": False,
-            "exit_reason": "",
+            "exit_reason": "HOLD_TO_EXPIRY",
             "exit_state": "HOLD",
             "exit_priority": 0,
             "pnl_ratio": pnl_ratio,
@@ -1060,19 +999,15 @@ def evaluate_exit_rules(monitored_positions_df, config):
             "effective_entry_price": entry_price,
             "held_current_edge": current_edge,
             "held_fair_gap": fair_gap,
-            "held_executable_now": held_executable_now,
             "exit_bid_price": bid_price,
             "exit_ask_price": ask_price,
             "exit_spread": spread,
-            "min_profit_exit_pct": min_profit_exit_pct,
             "max_exit_spread": max_exit_spread,
-            "is_cheap_contract": bool(is_cheap_contract),
+            "hours_left": hours_left,
             "price_move": price_move,
-            "cheap_contract_price_threshold": cheap_contract_price_threshold,
-            "cheap_contract_absolute_stop_loss": cheap_contract_absolute_stop_loss,
-            "cheap_contract_soft_stop_loss": cheap_contract_soft_stop_loss,
         }
 
+        # Respect upstream emergency classifications if they already fired.
         if should_exit_existing or held_state.startswith("EXIT_"):
             out.update({
                 "should_exit": True,
@@ -1083,97 +1018,91 @@ def evaluate_exit_rules(monitored_positions_df, config):
             return pd.Series(out)
 
         if pd.isna(current_price) or pd.isna(entry_price) or entry_price <= 0:
-            out.update({"should_exit": False, "exit_reason": "INVALID_EXIT_DATA", "exit_state": "HOLD_INVALID_DATA"})
+            out.update({
+                "should_exit": False,
+                "exit_reason": "INVALID_EXIT_DATA_HOLD",
+                "exit_state": "HOLD_INVALID_DATA",
+            })
             return pd.Series(out)
 
-        if not is_cheap_contract:
-            if pd.notna(pnl_ratio) and pnl_ratio <= hard_stop_loss_pct:
-                out.update({"should_exit": True, "exit_reason": f"ABSOLUTE_HARD_STOP_LOSS pnl_ratio={pnl_ratio:.4f}", "exit_state": "EXIT_ABSOLUTE_HARD_STOP_LOSS", "exit_priority": 95})
-                return pd.Series(out)
-        else:
-            if pd.notna(price_move) and price_move <= -cheap_contract_absolute_stop_loss:
-                out.update({"should_exit": True, "exit_reason": f"ABSOLUTE_PRICE_STOP price_move={price_move:.4f}", "exit_state": "EXIT_ABSOLUTE_PRICE_STOP", "exit_priority": 95})
-                return pd.Series(out)
-
-        if not is_cheap_contract and pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct and ((pd.notna(current_edge) and current_edge <= edge_collapse_threshold) or (pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold)):
-            if not _risk_exit_allowed(spread):
-                out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_EARLY_RISK_EXIT"})
-                return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"EARLY_LOSS_THESIS_BREAK pnl_ratio={pnl_ratio:.4f} edge={current_edge if pd.notna(current_edge) else float('nan'):.4f} fair_gap={fair_gap if pd.notna(fair_gap) else float('nan'):.4f}", "exit_state": "EXIT_EARLY_LOSS_THESIS_BREAK", "exit_priority": 88})
+        # Expiry / settlement handoff.
+        if pd.notna(hours_left) and hours_left <= 0:
+            out.update({
+                "should_exit": True,
+                "exit_reason": "CONTRACT_RESOLVED",
+                "exit_state": "EXIT_RESOLVED",
+                "exit_priority": 110,
+            })
             return pd.Series(out)
 
-        if is_cheap_contract and pd.notna(price_move) and price_move <= -cheap_contract_soft_stop_loss and ((pd.notna(current_edge) and current_edge <= edge_collapse_threshold) or (pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold)):
-            if not _risk_exit_allowed(spread):
-                out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_EARLY_RISK_EXIT_CHEAP"})
+        # For daily binaries, the default behavior is to hold through the final window.
+        if hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left:
+            # Only break glass for extreme damage.
+            if pd.notna(pnl_ratio) and pnl_ratio <= emergency_stop_loss_pct:
+                out.update({
+                    "should_exit": True,
+                    "exit_reason": f"EXIT_EMERGENCY_STOP pnl_ratio={pnl_ratio:.4f}",
+                    "exit_state": "EXIT_EMERGENCY_STOP",
+                    "exit_priority": 95,
+                })
                 return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"EARLY_CHEAP_CONTRACT_THESIS_BREAK price_move={price_move:.4f} edge={current_edge if pd.notna(current_edge) else float('nan'):.4f} fair_gap={fair_gap if pd.notna(fair_gap) else float('nan'):.4f}", "exit_state": "EXIT_EARLY_CHEAP_CONTRACT_THESIS_BREAK", "exit_priority": 88})
+
+            if pd.notna(price_move) and price_move <= emergency_price_move:
+                out.update({
+                    "should_exit": True,
+                    "exit_reason": f"EXIT_EMERGENCY_PRICE_MOVE price_move={price_move:.4f}",
+                    "exit_state": "EXIT_EMERGENCY_PRICE_MOVE",
+                    "exit_priority": 94,
+                })
+                return pd.Series(out)
+
+            out.update({
+                "should_exit": False,
+                "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_state": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_priority": 0,
+            })
             return pd.Series(out)
 
-        if not is_cheap_contract:
-            if pd.notna(pnl_ratio) and pnl_ratio <= -0.04 and pd.notna(current_edge) and current_edge < 0:
-                if not _risk_exit_allowed(spread):
-                    out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_PRICE_DETERIORATION"})
-                    return pd.Series(out)
-                out.update({"should_exit": True, "exit_reason": f"PRICE_DETERIORATION_EXIT pnl_ratio={pnl_ratio:.4f} edge={current_edge:.4f}", "exit_state": "EXIT_PRICE_DETERIORATION", "exit_priority": 86})
-                return pd.Series(out)
-        else:
-            if pd.notna(price_move) and price_move <= -cheap_contract_soft_stop_loss and pd.notna(current_edge) and current_edge < 0:
-                if not _risk_exit_allowed(spread):
-                    out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_PRICE_DETERIORATION_CHEAP"})
-                    return pd.Series(out)
-                out.update({"should_exit": True, "exit_reason": f"CHEAP_CONTRACT_PRICE_DETERIORATION price_move={price_move:.4f} edge={current_edge:.4f}", "exit_state": "EXIT_CHEAP_CONTRACT_PRICE_DETERIORATION", "exit_priority": 86})
-                return pd.Series(out)
-
-        red_loss_condition = (pd.notna(pnl_ratio) and pnl_ratio < 0 and not is_cheap_contract) or (pd.notna(price_move) and price_move < 0 and is_cheap_contract)
-        if allow_not_tradable_red_exit and red_loss_condition and decision_state in {"NOT_TRADABLE", "MARKET_TOO_WIDE", "OBSERVE_ONLY"} and pd.notna(current_edge) and current_edge <= weak_edge_threshold:
-            if not _risk_exit_allowed(spread):
-                out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_MARKET_DETERIORATED"})
-                return pd.Series(out)
-            metric = f"pnl_ratio={pnl_ratio:.4f}" if pd.notna(pnl_ratio) else f"price_move={price_move:.4f}"
-            out.update({"should_exit": True, "exit_reason": f"MARKET_DETERIORATED {metric} edge={current_edge:.4f}", "exit_state": "EXIT_MARKET_DETERIORATED", "exit_priority": 80})
+        # Outside the final hold window, still be very conservative.
+        if pd.notna(pnl_ratio) and pnl_ratio <= emergency_stop_loss_pct:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_EMERGENCY_STOP pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_EMERGENCY_STOP",
+                "exit_priority": 95,
+            })
             return pd.Series(out)
 
-        non_exec_condition = (pd.notna(pnl_ratio) and pnl_ratio < -0.10 and not is_cheap_contract) or (pd.notna(price_move) and price_move <= -cheap_contract_absolute_stop_loss and is_cheap_contract)
-        if allow_non_executable_red_exit and non_exec_condition and (not held_executable_now) and pd.notna(current_edge) and current_edge <= edge_collapse_threshold:
-            if not _risk_exit_allowed(spread):
-                out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_NON_EXECUTABLE_RED"})
-                return pd.Series(out)
-            metric = f"pnl_ratio={pnl_ratio:.4f}" if pd.notna(pnl_ratio) else f"price_move={price_move:.4f}"
-            out.update({"should_exit": True, "exit_reason": f"NON_EXECUTABLE_RED_EXIT {metric} edge={current_edge:.4f}", "exit_state": "EXIT_NON_EXECUTABLE_RED", "exit_priority": 78})
+        if pd.notna(price_move) and price_move <= emergency_price_move:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_EMERGENCY_PRICE_MOVE price_move={price_move:.4f}",
+                "exit_state": "EXIT_EMERGENCY_PRICE_MOVE",
+                "exit_priority": 94,
+            })
             return pd.Series(out)
 
-        if pd.notna(current_edge) and current_edge <= edge_collapse_threshold and pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold:
-            if not _risk_exit_allowed(spread):
-                out.update({"should_exit": False, "exit_reason": _risk_gate_reason(spread), "exit_state": "HOLD_GATE_BLOCKED_EDGE_COLLAPSE"})
-                return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"EDGE_AND_FAIR_VALUE_COLLAPSED edge={current_edge:.4f} fair_gap={fair_gap:.4f}", "exit_state": "EXIT_EDGE_COLLAPSED", "exit_priority": 75})
+        # Do not force exits into bad spreads unless this is truly catastrophic.
+        if pd.notna(spread) and spread > max_exit_spread:
+            out.update({
+                "should_exit": False,
+                "exit_reason": f"HOLD_SPREAD_TOO_WIDE spread={spread:.4f}",
+                "exit_state": "HOLD_SPREAD_TOO_WIDE",
+                "exit_priority": 0,
+            })
             return pd.Series(out)
 
-        if pd.notna(pnl_ratio) and pnl_ratio >= profit_lock_pct and ((pd.notna(current_edge) and current_edge <= weak_edge_threshold) or (pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold) or (not held_executable_now)):
-            if not _profit_exit_allowed(pnl_ratio, spread):
-                out.update({"should_exit": False, "exit_reason": _profit_gate_reason(pnl_ratio, spread), "exit_state": "HOLD_GATE_BLOCKED_PROFIT_LOCK"})
-                return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"PROFIT_LOCK pnl_ratio={pnl_ratio:.4f}", "exit_state": "EXIT_PROFIT_LOCK", "exit_priority": 70})
-            return pd.Series(out)
-
-        if pd.notna(pnl_ratio) and pnl_ratio >= soft_profit_lock_pct and pd.notna(current_edge) and current_edge <= edge_collapse_threshold:
-            if not _profit_exit_allowed(pnl_ratio, spread):
-                out.update({"should_exit": False, "exit_reason": _profit_gate_reason(pnl_ratio, spread), "exit_state": "HOLD_GATE_BLOCKED_SOFT_PROFIT_LOCK"})
-                return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"SOFT_PROFIT_LOCK pnl_ratio={pnl_ratio:.4f} edge={current_edge:.4f}", "exit_state": "EXIT_SOFT_PROFIT_LOCK", "exit_priority": 68})
-            return pd.Series(out)
-
-        if allow_stagnation_exit and pd.notna(pnl_ratio) and pnl_ratio >= stagnation_min_profit and pd.notna(current_edge) and current_edge <= weak_edge_threshold and pd.notna(fair_gap) and fair_gap <= 0:
-            if not _profit_exit_allowed(pnl_ratio, spread):
-                out.update({"should_exit": False, "exit_reason": _profit_gate_reason(pnl_ratio, spread), "exit_state": "HOLD_GATE_BLOCKED_STAGNATION"})
-                return pd.Series(out)
-            out.update({"should_exit": True, "exit_reason": f"STAGNATION_EXIT pnl_ratio={pnl_ratio:.4f} edge={current_edge:.4f} fair_gap={fair_gap:.4f}", "exit_state": "EXIT_STAGNATION", "exit_priority": 60})
-            return pd.Series(out)
-
-        out.update({"should_exit": False, "exit_reason": "NO_EXIT_TRIGGER", "exit_state": "HOLD", "exit_priority": 0})
+        out.update({
+            "should_exit": False,
+            "exit_reason": "HOLD_TO_EXPIRY_DEFAULT",
+            "exit_state": "HOLD",
+            "exit_priority": 0,
+        })
         return pd.Series(out)
 
     exit_eval = df.apply(_rule_eval, axis=1)
     for col in exit_eval.columns:
         df[col] = exit_eval[col]
     return df
+
