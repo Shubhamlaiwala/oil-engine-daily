@@ -1531,7 +1531,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         decision_cfg.get("allow_wide_market_edge_override", True)
     )
     wide_market_edge_override_threshold = float(
-        decision_cfg.get("wide_market_edge_override_threshold", 0.18)
+        decision_cfg.get("wide_market_edge_override_threshold", 0.14)
     )
     wide_market_max_overround = float(
         decision_cfg.get(
@@ -1699,9 +1699,9 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         # setups pass into the actionable path. This does not affect
         # monitoring of existing held positions.
         # =====================================================
-        strict_edge = float(decision_cfg.get("strict_live_entry_edge", 0.15))
-        strict_prob = float(decision_cfg.get("strict_live_entry_prob", 0.65))
-        strict_high_conf_only = bool(decision_cfg.get("strict_live_entry_high_conf_only", True))
+        strict_edge = float(decision_cfg.get("strict_live_entry_edge", 0.10))
+        strict_prob = float(decision_cfg.get("strict_live_entry_prob", 0.60))
+        strict_high_conf_only = bool(decision_cfg.get("strict_live_entry_high_conf_only", False))
 
         yes_conf = str(compute_confidence(edge_yes)).upper() if pd.notna(edge_yes) else "LOW"
         no_conf = str(compute_confidence(edge_no)).upper() if pd.notna(edge_no) else "LOW"
@@ -2520,22 +2520,17 @@ def run_engine_once(config: dict, force_include_contract_tickers=None) -> dict:
             if not series_values.empty:
                 current_series_ticker = series_values.iloc[0]
 
-    if current_event_ticker:
-        filtered_force_include_contract_tickers = [
-            t for t in force_include_contract_tickers
-            if isinstance(t, str) and t.startswith(f"{current_event_ticker}-")
-        ]
-    elif current_series_ticker:
-        filtered_force_include_contract_tickers = [
-            t for t in force_include_contract_tickers
-            if isinstance(t, str) and t.startswith(f"{current_series_ticker}-")
-        ]
-    else:
-        filtered_force_include_contract_tickers = force_include_contract_tickers
+    # Keep all held contract tickers available for monitoring workflows.
+    # Daily positions may belong to the immediately prior event while still
+    # being economically valid to hold through settlement. Do not pre-filter
+    # them away here just because the active event scope has advanced.
+    filtered_force_include_contract_tickers = [
+        str(t).strip() for t in force_include_contract_tickers if str(t).strip()
+    ]
 
     if len(filtered_force_include_contract_tickers) != len(force_include_contract_tickers):
         logging.info(
-            "Filtered held contract tickers to current oil event scope | original=%s | filtered=%s | event_ticker=%s | series_ticker=%s",
+            "Normalized held contract tickers for monitoring | original=%s | normalized=%s | event_ticker=%s | series_ticker=%s",
             len(force_include_contract_tickers),
             len(filtered_force_include_contract_tickers),
             current_event_ticker,
@@ -2552,7 +2547,7 @@ def run_engine_once(config: dict, force_include_contract_tickers=None) -> dict:
     # ðŸ”¥ FIXED BLOCK (NO CRASH)
     if monitored_contracts_df.empty:
         logging.warning(
-            "No Kalshi contracts matched this event link after strike/liquidity filters and held-contract preservation. Skipping cycle."
+            "No Kalshi contracts matched the current active event after strike/liquidity filters. Skipping cycle."
         )
         return {
             "skipped": True,
