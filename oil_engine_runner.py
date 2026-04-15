@@ -1391,7 +1391,7 @@ def format_trade_alert(row, oil_price, config):
     hours_left_text = f"{float(hours_left):.2f}" if pd.notna(hours_left) else "N/A"
 
     msg = (
-        "ðŸš¨ KALSHI OIL TRADE SIGNAL\n\n"
+        "🚨 KALSHI OIL TRADE SIGNAL\n\n"
         f"Contract: {ticker}\n"
         f"Action: {action}\n"
         f"Strike: {strike:.2f}\n"
@@ -1680,7 +1680,7 @@ def format_watchlist_alert(row, oil_price, config):
     fair_prob = pick_model_prob_from_row(row, None)
 
     alert_type = build_watchlist_alert_type(row)
-    title = "ðŸ‘€ OIL WATCHLIST ALERT"
+    title = "👀 OIL WATCHLIST ALERT"
 
     if alert_type == "watchlist_wait_for_price":
         reason_line = "Setup is interesting, but current price has not reached your target yet."
@@ -1869,7 +1869,7 @@ def format_portfolio_alert(plan, config):
     actions = p.get("actions") or []
 
     lines = [
-        "ðŸš€ Oil Portfolio Signal",
+        "🚀 Oil Portfolio Signal",
         "",
         f"Recommendation: {p.get('recommendation')}",
         f"Reason: {p.get('reason')}",
@@ -2112,7 +2112,7 @@ def format_exit_alert(row, config):
     fair_entry_text = f"{float(fair_entry):.3f}" if pd.notna(fair_entry) else "N/A"
 
     msg = (
-        "âš ï¸ KALSHI OIL EXIT ALERT\n\n"
+        "⚠️ KALSHI OIL EXIT ALERT\n\n"
         f"Contract: {ticker}\n"
         f"Action Held: {action}\n"
         f"Strike: {strike:.2f}\n\n"
@@ -2337,8 +2337,39 @@ def validate_execution_action(
     if action_type == "ENTER":
         if allocation > max(deployable_cash_remaining, 0.0) + 1e-9:
             return EXECUTION_STATE_SKIPPED_NO_CASH, "Deployable cash unavailable for proposed entry."
+
         if held is not None and side and held.get("held_side") == side:
             return EXECUTION_STATE_SKIPPED_DUPLICATE, "Same-side position already appears active in live positions."
+
+        existing_intents = (state or {}).get("order_intents") or {}
+        for intent in existing_intents.values():
+            if not isinstance(intent, dict):
+                continue
+
+            intent_ticker = safe_str(intent.get("ticker"))
+            intent_type = safe_upper(intent.get("type"))
+            intent_side = safe_upper(intent.get("side"))
+            intent_state = safe_upper(intent.get("state"))
+
+            if intent_ticker != ticker or intent_type != "ENTER":
+                continue
+
+            if side and intent_side and intent_side != side:
+                continue
+
+            if intent_state in {
+                ORDER_INTENT_STATE_READY_TO_SUBMIT,
+                ORDER_INTENT_STATE_SUBMITTED_SIMULATED,
+                ORDER_INTENT_STATE_SUBMITTED_LIVE,
+                ORDER_INTENT_STATE_AWAITING_RECONCILIATION,
+                ORDER_INTENT_STATE_RECONCILED_PARTIAL,
+                ORDER_INTENT_STATE_SKIPPED_DUPLICATE_PENDING,
+            }:
+                return (
+                    EXECUTION_STATE_SKIPPED_DUPLICATE,
+                    "Duplicate entry intent already exists for this ticker.",
+                )
+
         cooldown_seconds = get_min_time_between_trades_seconds(config or {})
         last_trade_ts = get_last_trade_timestamp(state)
         if cooldown_seconds > 0 and last_trade_ts is not None:
@@ -4387,7 +4418,7 @@ def record_status_alert_sent(status_type, payload=None):
 
 def format_status_alert(status_type, payload=None):
     payload = payload or {}
-    lines = [f"Ã¢â€žÂ¹Ã¯Â¸Â ENGINE STATUS: {status_type.upper()}"]
+    lines = [f"â„¹ï¸ ENGINE STATUS: {status_type.upper()}"]
     if payload:
         lines.append("")
         for key in sorted(payload.keys()):
@@ -5097,7 +5128,7 @@ def format_status_message(state: Dict[str, Any]) -> str:
     ts = current_time_et().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     return (
-        "ðŸ“ OIL ENGINE STATUS\n\n"
+        "📍 OIL ENGINE STATUS\n\n"
         f"State: {engine_state}\n"
         f"Oil Price: {oil_price}\n"
         f"Volatility: {volatility}\n"
@@ -5118,7 +5149,7 @@ def format_positions_message(state: Dict[str, Any]) -> str:
     exit_df = state.get("last_exit_df", pd.DataFrame())
 
     if positions_df is None or positions_df.empty:
-        return "ðŸ“¦ LIVE POSITIONS\n\nNo open Kalshi positions currently tracked."
+        return "📦 LIVE POSITIONS\n\nNo open Kalshi positions currently tracked."
 
     working_df = positions_df.copy()
 
@@ -5155,7 +5186,7 @@ def format_positions_message(state: Dict[str, Any]) -> str:
 
     working_df = working_df.drop_duplicates(subset=["contract_ticker"]).copy()
 
-    lines = ["ðŸ“¦ LIVE POSITIONS", ""]
+    lines = ["📦 LIVE POSITIONS", ""]
 
     for _, row in working_df.iterrows():
         ticker = safe_str(row.get("contract_ticker")) or "N/A"
@@ -5204,7 +5235,7 @@ def format_latest_trade_message(state: Dict[str, Any]) -> str:
     best_trade = get_best_actionable_trade(results)
 
     if best_trade is None:
-        return "ðŸ“ˆ LATEST ACTIONABLE TRADE\n\nNo actionable ranked trade candidates available."
+        return "📈 LATEST ACTIONABLE TRADE\n\nNo actionable ranked trade candidates available."
 
     action = safe_upper(best_trade.get("action"))
     edge_value = safe_float(
@@ -5238,7 +5269,7 @@ def format_latest_trade_message(state: Dict[str, Any]) -> str:
             break
 
     return (
-        "ðŸ“ˆ LATEST ACTIONABLE TRADE\n\n"
+        "📈 LATEST ACTIONABLE TRADE\n\n"
         f"Ticker: {safe_str(best_trade.get('contract_ticker')) or 'N/A'}\n"
         f"Action: {action or 'N/A'}\n"
         f"Strike: {strike}\n"
@@ -5268,12 +5299,12 @@ def handle_telegram_command(command_text: str, chat_id: str, state: Dict[str, An
 
     if command == "/pause":
         state["paused"] = True
-        send_telegram_alert("Ã¢ÂÂ¸Ã¯Â¸Â Bot paused successfully.", chat_id=chat_id)
+        send_telegram_alert("â¸ï¸ Bot paused successfully.", chat_id=chat_id)
         return
 
     if command == "/resume":
         state["paused"] = False
-        send_telegram_alert("â–¶ï¸ Bot resumed successfully.", chat_id=chat_id)
+        send_telegram_alert("▶️ Bot resumed successfully.", chat_id=chat_id)
         return
 
     send_telegram_alert(
