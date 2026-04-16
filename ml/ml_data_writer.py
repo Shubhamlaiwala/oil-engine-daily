@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from ml_schema import (
+from .ml_schema import (
     candidate_record_from_row,
     config_hash,
     ensure_parent_dir,
