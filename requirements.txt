@@ -6,3 +6,4 @@ scipy
 yfinance
 cryptography
 kalshi_python_sync
+boto3
