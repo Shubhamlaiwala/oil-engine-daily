@@ -1524,6 +1524,10 @@ def evaluate_ladder(price, contracts, vol_stats, config):
     prob_floor = float(config["model"].get("prob_floor", 0.001))
     prob_cap = float(config["model"].get("prob_cap", 0.999))
 
+    model_cfg = config.get("model", {}) or {}
+    touch_paths = int(model_cfg.get("touch_paths", 2000))
+    touch_steps = int(model_cfg.get("touch_steps", 40))
+
     decision_cfg = config.get("decision", {})
     fee_buffer = float(decision_cfg.get("fee_buffer", 0.0))
     spread_buffer = float(decision_cfg.get("spread_buffer", 0.0))
@@ -1615,8 +1619,8 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             resolution_time_et,
             adjusted_vol,
             dynamic_drift,
-            n_paths=config["model"]["touch_paths"],
-            n_steps=config["model"]["touch_steps"],
+            n_paths=touch_paths,
+            n_steps=touch_steps,
         )
         fair_prob_touch = float(np.clip(fair_prob_touch, prob_floor, prob_cap))
 
@@ -2209,168 +2213,6 @@ def evaluate_ladder(price, contracts, vol_stats, config):
     )
 
     return enforce_monotonic_probabilities(df)
-
-
-def update_trade_state(ranked_df, config):
-    if ranked_df is None or ranked_df.empty:
-        return pd.DataFrame(), []
-
-    max_open_trades = int(config.get("decision", {}).get("max_open_trades", 3))
-    min_edge = float(
-        config.get("decision", {}).get(
-            "buy_threshold",
-            config.get("decision", {}).get("min_edge_to_trade", 0.03),
-        )
-    )
-    exit_edge_drop = float(config.get("exit", {}).get("fair_value_drop", 0.10))
-
-    open_positions = []
-    trade_events = []
-
-    actionable_df = ranked_df[ranked_df["action"].isin(["BUY_YES", "BUY_NO"])].copy()
-    if actionable_df.empty:
-        return pd.DataFrame(), []
-
-    actionable_df["selected_edge"] = actionable_df.apply(
-        lambda row: row.get("edge_yes") if str(row.get("action", "")).upper() == "BUY_YES" else row.get("edge_no"),
-        axis=1,
-    )
-
-    actionable_df = actionable_df[actionable_df["selected_edge"] >= min_edge].head(max_open_trades).copy()
-
-    for _, row in actionable_df.iterrows():
-        action = row.get("action", "NO_TRADE")
-        market_prob_yes = row.get("market_prob_yes", np.nan)
-        market_prob_no = row.get("market_prob_no", np.nan)
-
-        entry_market = row.get("ask_yes") if action == "BUY_YES" else row.get("ask_no")
-        if pd.isna(entry_market):
-            entry_market = market_prob_yes if action == "BUY_YES" else market_prob_no
-
-        entry_fair = row.get("decision_prob", np.nan)
-        current_fair = row.get("decision_prob", entry_fair)
-
-        status = "OPEN"
-        if pd.notna(current_fair) and pd.notna(entry_fair):
-            if current_fair < (entry_fair - exit_edge_drop):
-                status = "EXIT"
-
-        position = {
-            "run_timestamp_et": row.get("run_timestamp_et"),
-            "contract_ticker": row.get("contract_ticker"),
-            "contract": row.get("contract"),
-            "strike": row.get("strike"),
-            "action": action,
-            "decision_state": row.get("decision_state"),
-            "selected_side": row.get("selected_side", "YES" if action == "BUY_YES" else "NO" if action == "BUY_NO" else ""),
-            "entry_market_price": entry_market,
-            "entry_fair_value": entry_fair,
-            "current_fair_value": current_fair,
-            "target_yes_price": row.get("target_yes_price"),
-            "target_no_price": row.get("target_no_price"),
-            "executable_yes_now": row.get("executable_yes_now"),
-            "executable_no_now": row.get("executable_no_now"),
-            "entry_style": row.get("entry_style"),
-            "edge_yes": row.get("edge_yes"),
-            "edge_no": row.get("edge_no"),
-            "selected_edge": row.get("selected_edge"),
-            "confidence": row.get("confidence"),
-            "ev_yes": row.get("ev_yes"),
-            "ev_no": row.get("ev_no"),
-            "ev_yes_exec": row.get("ev_yes_exec"),
-            "ev_no_exec": row.get("ev_no_exec"),
-            "yes_no_ask_sum": row.get("yes_no_ask_sum"),
-            "overround": row.get("overround"),
-            "market_too_wide": row.get("market_too_wide"),
-            "market_too_wide_but_monitorable": row.get("market_too_wide_but_monitorable"),
-            "no_trade_reason": row.get("no_trade_reason"),
-            "is_liquid": row.get("is_liquid", True),
-            "status": status,
-        }
-        open_positions.append(position)
-
-        trade_events.append(
-            {
-                "run_timestamp_et": row.get("run_timestamp_et"),
-                "contract_ticker": row.get("contract_ticker"),
-                "contract": row.get("contract"),
-                "action": action,
-                "decision_state": row.get("decision_state"),
-                "selected_side": row.get("selected_side", "YES" if action == "BUY_YES" else "NO" if action == "BUY_NO" else ""),
-                "entry_market_price": entry_market,
-                "entry_fair_value": entry_fair,
-                "target_yes_price": row.get("target_yes_price"),
-                "target_no_price": row.get("target_no_price"),
-                "executable_yes_now": row.get("executable_yes_now"),
-                "executable_no_now": row.get("executable_no_now"),
-                "entry_style": row.get("entry_style"),
-                "selected_edge": row.get("selected_edge"),
-                "yes_no_ask_sum": row.get("yes_no_ask_sum"),
-                "overround": row.get("overround"),
-                "market_too_wide": row.get("market_too_wide"),
-                "market_too_wide_but_monitorable": row.get("market_too_wide_but_monitorable"),
-                "no_trade_reason": row.get("no_trade_reason"),
-                "status": status,
-            }
-        )
-
-    return pd.DataFrame(open_positions), trade_events
-
-
-def _dedup_signature_frame(df):
-    required_cols = [
-        "contract_ticker",
-        "strike",
-        "action",
-        "resolution_time_et",
-        "log_written_timestamp_et",
-    ]
-
-    if df is None or df.empty:
-        return pd.Series(dtype=str)
-
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        return pd.Series(dtype=str, index=df.index)
-
-    working = df.copy()
-
-    # Normalize timestamps safely. Some historical rows may contain None,
-    # malformed strings, or mixed timezone representations that can cause
-    # pandas datetime parsing to fail internally on certain versions.
-    raw_ts = working.get("log_written_timestamp_et")
-    if raw_ts is None:
-        return pd.Series(dtype=str, index=working.index)
-
-    normalized_ts = []
-    for value in raw_ts.tolist():
-        parsed = parse_iso_to_et(value)
-        if parsed is None:
-            normalized_ts.append(pd.NaT)
-        else:
-            normalized_ts.append(pd.Timestamp(parsed))
-
-    ts = pd.Series(normalized_ts, index=working.index, dtype="datetime64[ns, America/New_York]")
-    valid_mask = ts.notna()
-
-    if not bool(valid_mask.any()):
-        return pd.Series(dtype=str, index=working.index)
-
-    minute_key = pd.Series(index=working.index, dtype="object")
-    minute_key.loc[valid_mask] = ts.loc[valid_mask].dt.strftime("%Y-%m-%d %H:%M")
-
-    return (
-        working["contract_ticker"].astype(str)
-        + "||"
-        + working["strike"].astype(str)
-        + "||"
-        + working["action"].astype(str)
-        + "||"
-        + working["resolution_time_et"].astype(str)
-        + "||"
-        + minute_key.astype(str)
-    )
-
 
 def log_trade_candidates(ranked_df, market_contracts_df, price, price_src, vol_stats, vol_src, config):
     trade_log_file = config["logging"].get("trade_log_file", "trade_log_v6.csv")
