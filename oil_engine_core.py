@@ -1346,22 +1346,59 @@ def build_contracts_from_market_df(market_contracts_df):
     return contracts
 
 
-def filter_contracts_near_spot(market_contracts_df, spot, config):
+def filter_contracts_near_spot(market_contracts_df, spot, config, vol_stats=None):
     if market_contracts_df is None or market_contracts_df.empty:
         return market_contracts_df
 
-    max_abs_distance = min(
-        config["filters"]["max_abs_distance"],
-        max(
-            config["filters"]["strike_band_below"],
-            config["filters"]["strike_band_above"],
-        ),
+    out = market_contracts_df.copy()
+    out["distance_to_strike"] = pd.to_numeric(out["strike"], errors="coerce") - float(spot)
+    out["abs_distance_to_strike"] = out["distance_to_strike"].abs()
+
+    filters_cfg = (config.get("filters") or {})
+    model_cfg = (config.get("model") or {})
+
+    strike_band_below = float(filters_cfg.get("strike_band_below", 10.0))
+    strike_band_above = float(filters_cfg.get("strike_band_above", 10.0))
+    hard_band_cap = max(strike_band_below, strike_band_above, 10.0)
+
+    static_cap = float(filters_cfg.get("max_abs_distance", hard_band_cap))
+    use_dynamic_distance = bool(filters_cfg.get("use_dynamic_distance", False))
+
+    blended_vol = None
+    if isinstance(vol_stats, dict):
+        blended_vol = vol_stats.get("blended_vol")
+    if blended_vol is None:
+        blended_vol = filters_cfg.get(
+            "distance_vol_reference",
+            model_cfg.get("annualized_volatility_fallback", 0.25),
+        )
+    try:
+        blended_vol = float(blended_vol)
+    except Exception:
+        blended_vol = float(model_cfg.get("annualized_volatility_fallback", 0.25))
+
+    if use_dynamic_distance:
+        distance_vol_multiplier = float(filters_cfg.get("distance_vol_multiplier", 1.0))
+        min_distance = float(filters_cfg.get("min_distance", 5.0))
+        max_distance = float(filters_cfg.get("max_distance", static_cap))
+
+        dynamic_distance = float(spot) * max(blended_vol, 0.0) * max(distance_vol_multiplier, 0.0)
+        max_abs_distance = max(min_distance, min(dynamic_distance, max_distance))
+    else:
+        max_abs_distance = static_cap
+
+    max_abs_distance = min(max_abs_distance, hard_band_cap)
+
+    logging.info(
+        "Strike distance filter | spot=%.2f | blended_vol=%.4f | dynamic=%s | max_abs_distance=%.2f | band_cap=%.2f",
+        float(spot),
+        float(blended_vol),
+        use_dynamic_distance,
+        float(max_abs_distance),
+        float(hard_band_cap),
     )
 
-    out = market_contracts_df.copy()
-    out["distance_to_strike"] = out["strike"] - spot
-    out["abs_distance_to_strike"] = out["distance_to_strike"].abs()
-    out = out[out["abs_distance_to_strike"] <= max_abs_distance]
+    out = out[out["abs_distance_to_strike"] <= max_abs_distance].copy()
     return out.reset_index(drop=True)
 
 
@@ -2499,7 +2536,7 @@ def run_engine_once(config: dict, force_include_contract_tickers=None) -> dict:
         }
 
     all_event_markets_df = get_kalshi_market_contracts(config)
-    candidate_contracts_df = filter_contracts_near_spot(all_event_markets_df, price, config)
+    candidate_contracts_df = filter_contracts_near_spot(all_event_markets_df, price, config, vol_stats=vol_stats)
     candidate_contracts_df = apply_liquidity_filters(candidate_contracts_df, config)
 
     kalshi_cfg = config.get("kalshi", {})
