@@ -443,10 +443,19 @@ def _normalize_live_positions_df(df: pd.DataFrame) -> pd.DataFrame:
         out["event_ticker"] = out["event_ticker"].astype(str).str.strip()
 
     if "strike" not in out.columns:
-        out["strike"] = out["ticker"].apply(_extract_strike_from_ticker)
+        out["strike"] = pd.to_numeric(
+            out["ticker"].apply(_extract_strike_from_ticker),
+            errors="coerce",
+        )
     else:
         out["strike"] = pd.to_numeric(out["strike"], errors="coerce")
-        out.loc[out["strike"].isna(), "strike"] = out.loc[out["strike"].isna(), "ticker"].apply(_extract_strike_from_ticker)
+        mask = out["strike"].isna()
+        if bool(mask.any()):
+            extracted = out.loc[mask, "ticker"].apply(_extract_strike_from_ticker)
+            extracted = pd.to_numeric(extracted, errors="coerce")
+            out.loc[mask, "strike"] = extracted
+
+    out["strike"] = pd.to_numeric(out["strike"], errors="coerce")
 
     return out.reset_index(drop=True)
 
