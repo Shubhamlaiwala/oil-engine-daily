@@ -15,6 +15,21 @@ from scipy.stats import norm
 
 ET = ZoneInfo("America/New_York")
 
+def _dedup_signature_frame(df):
+    if df is None or df.empty:
+        return pd.Series([], dtype=str)
+
+    cols = [
+        "contract_ticker",
+        "selected_side",
+    ]
+
+    cols = [c for c in cols if c in df.columns]
+
+    if not cols:
+        return pd.Series([], dtype=str)
+
+    return df[cols].astype(str).agg("|".join, axis=1)
 
 def load_config(path: str = "settings.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
