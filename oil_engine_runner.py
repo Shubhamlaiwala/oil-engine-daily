@@ -15,6 +15,9 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
+from ml.ml_data_writer import MLDataWriter
+from ml.ml_schema import build_run_id
+
 from state_manager import (
     load_paper_positions_file,
     load_runtime_state_file,
@@ -5401,6 +5404,12 @@ def main():
     summary_interval = get_summary_interval(config)
     last_summary_time = 0
 
+    ml_writer = MLDataWriter(
+        base_dir="./logs/ml",
+        engine_name="oil_engine_daily",
+        engine_version="v1",
+    )
+
     logging.info(
         "Starting oil engine. run_once=%s poll=%ss summary_interval=%ss",
         args.run_once,
@@ -5499,12 +5508,26 @@ def main():
                 continue
 
             now = time.time()
+            run_id = build_run_id("oil_engine_daily")
+            cycle_timestamp_et = current_time_et().isoformat()
 
             if now - last_summary_time >= summary_interval:
                 log_engine_snapshot(results, config)
                 last_summary_time = now
 
             ranked_df = (results or {}).get("ranked_df", pd.DataFrame())
+
+            try:
+                ml_writer.write_candidate_snapshot(
+                    ranked_df=ranked_df,
+                    run_id=run_id,
+                    cycle_timestamp_et=cycle_timestamp_et,
+                    config=config,
+                    portfolio_plan=None,
+                )
+            except Exception as exc:
+                logging.warning("ML candidate snapshot write failed | error=%s", exc)
+
             open_positions_df = pd.DataFrame()
             watchlist_df = pd.DataFrame()
             exit_df = pd.DataFrame()
@@ -5591,6 +5614,16 @@ def main():
                     "deployable_cash": 0.0,
                 }
             log_portfolio_recommendation(portfolio_plan)
+
+            try:
+                ml_writer.write_portfolio_decision(
+                    plan=portfolio_plan,
+                    run_id=run_id,
+                    cycle_timestamp_et=cycle_timestamp_et,
+                    config=config,
+                )
+            except Exception as exc:
+                logging.warning("ML portfolio decision write failed | error=%s", exc)
 
             execution_plan = build_execution_intent_plan(
                 portfolio_plan=portfolio_plan,
