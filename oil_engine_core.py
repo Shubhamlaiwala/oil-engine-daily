@@ -2451,7 +2451,8 @@ def run_engine_once(config: dict, force_include_contract_tickers=None) -> dict:
     vol_stats["history_df"] = history_df
     evaluated_df = evaluate_ladder(price, contracts, vol_stats, config)
     ranked_df = rank_trade_candidates(evaluated_df)
-    open_positions_df, trade_events = update_trade_state(ranked_df, config)
+    open_positions_df = pd.DataFrame()
+    trade_events = []
     logged_trades_df = log_trade_candidates(
         ranked_df,
         monitored_contracts_df,
