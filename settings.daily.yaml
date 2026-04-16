@@ -76,6 +76,15 @@ model:
   max_annualized_vol: 0.80
   annualized_volatility_fallback: 0.25
 
+  prob_floor: 0.001
+  prob_cap: 0.999
+
+  blend_terminal_weight: 1.0
+  blend_touch_weight: 0.0
+
+  touch_paths: 2000
+  touch_steps: 40
+
 # =========================================================
 # TRADING PHASES
 # =========================================================
