@@ -17,6 +17,7 @@ from datetime import datetime
 
 from ml.ml_data_writer import MLDataWriter
 from ml.ml_schema import build_run_id
+from ml.r2_uploader import upload_ml_logs
 
 from state_manager import (
     load_paper_positions_file,
@@ -3854,11 +3855,22 @@ def process_order_intents(
 
         if mode == EXECUTION_MODE_SIMULATION:
             intent["submission_attempts"] = safe_int(intent.get("submission_attempts"), 0) + 1
-            intent["state"] = ORDER_INTENT_STATE_SUBMITTED_SIMULATED
             intent["submitted_at"] = time.time()
             intent["last_submission_attempt_at"] = time.time()
+            intent["reconciliation_mode"] = EXECUTION_MODE_SIMULATION
+            intent["state"] = ORDER_INTENT_STATE_RECONCILED_FILLED
+            intent["reconciled_at"] = time.time()
+            intent["reconciliation_age_seconds"] = 0.0
+            intent["reconciliation_reason"] = "Simulation mode fills immediately and applies to the paper ledger in the same cycle."
+            maybe_apply_reconciled_simulation_intent_to_paper_ledger(
+                intent=intent,
+                state=state,
+                config=config,
+            )
+            mark_trade_timestamp(state, intent["reconciled_at"])
             log_order_intent(intent, prefix="Order submission")
             summary["submitted_count"] += 1
+            summary["filled_count"] += 1
         else:
             intent["submission_attempts"] = safe_int(intent.get("submission_attempts"), 0) + 1
             intent["last_submission_attempt_at"] = time.time()
@@ -3928,9 +3940,12 @@ def process_order_intents(
 
         tracker_state = EXECUTION_STATE_AWAITING_RECON
         tracker_resolved = False
-        if safe_upper(intent.get("state")) in {ORDER_INTENT_STATE_SUBMITTED_SIMULATED, ORDER_INTENT_STATE_SUBMITTED_LIVE}:
+        if safe_upper(intent.get("state")) == ORDER_INTENT_STATE_SUBMITTED_LIVE:
             intent["state"] = ORDER_INTENT_STATE_AWAITING_RECONCILIATION
             intent["awaiting_reconciliation_since"] = time.time()
+        elif safe_upper(intent.get("state")) == ORDER_INTENT_STATE_RECONCILED_FILLED:
+            tracker_state = EXECUTION_STATE_RECONCILED
+            tracker_resolved = True
         elif safe_upper(intent.get("state")) == ORDER_INTENT_STATE_SKIPPED_DUPLICATE:
             tracker_state = EXECUTION_STATE_SKIPPED_DUPLICATE
             tracker_resolved = True
@@ -5528,6 +5543,11 @@ def main():
             except Exception as exc:
                 logging.warning("ML candidate snapshot write failed | error=%s", exc)
 
+            try:
+                upload_ml_logs()
+            except Exception as exc:
+                logging.warning("R2 upload failed after candidate snapshot write | error=%s", exc)
+
             open_positions_df = pd.DataFrame()
             watchlist_df = pd.DataFrame()
             exit_df = pd.DataFrame()
@@ -5624,6 +5644,11 @@ def main():
                 )
             except Exception as exc:
                 logging.warning("ML portfolio decision write failed | error=%s", exc)
+
+            try:
+                upload_ml_logs()
+            except Exception as exc:
+                logging.warning("R2 upload failed after portfolio decision write | error=%s", exc)
 
             execution_plan = build_execution_intent_plan(
                 portfolio_plan=portfolio_plan,
@@ -5782,6 +5807,10 @@ def main():
                 runtime_state.get("paper_positions_cache") or [],
                 note="cycle_complete",
             )
+            try:
+                upload_ml_logs()
+            except Exception as exc:
+                logging.warning("R2 upload failed at cycle_complete | error=%s", exc)
             maybe_archive_logs(
                 config,
                 runtime_state,
