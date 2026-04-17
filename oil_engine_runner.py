@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 
 from ml.ml_data_writer import MLDataWriter
-from ml.ml_schema import build_run_id
+from ml.ml_schema import build_run_id, build_trade_id, trade_outcome_record, config_hash
 from ml.r2_uploader import upload_ml_logs
 
 from state_manager import (
@@ -216,6 +216,7 @@ runtime_state: Dict[str, Any] = {
     "paper_positions_cache": [],
     "held_position_state": {},
     "last_trade_ts": None,
+    "pending_trade_outcomes": [],
 }
 
 remote_log_upload_state: Dict[str, Any] = {"last_upload_ts": 0.0}
@@ -551,6 +552,253 @@ def _find_open_paper_position_index(
     return None
 
 
+def _pending_trade_outcomes_store(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    store = state.get("pending_trade_outcomes")
+    if not isinstance(store, list):
+        store = []
+        state["pending_trade_outcomes"] = store
+    return store
+
+
+def _et_iso_from_ts(value: Any) -> Optional[str]:
+    ts = safe_float(value, None)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=current_time_et().tzinfo).isoformat()
+    except Exception:
+        return None
+
+
+def _append_trade_outcome_for_closed_position(
+    *,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    position_before_close: Dict[str, Any],
+    closed_contracts: int,
+    exit_price: Optional[float],
+    settlement_value: Optional[float],
+    exit_reason: str,
+    settled: bool,
+    exit_timestamp_ts: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    if closed_contracts <= 0:
+        return None
+
+    ticker = safe_str(position_before_close.get("ticker"))
+    side = safe_upper(position_before_close.get("side"))
+    entry_price = safe_float(position_before_close.get("entry_price"), None)
+    if entry_price is None:
+        return None
+
+    exit_ts = safe_float(exit_timestamp_ts, time.time())
+    entry_ts = safe_float(position_before_close.get("entry_time"), None)
+    entry_timestamp_et = _et_iso_from_ts(entry_ts) or current_time_et().isoformat()
+    exit_timestamp_et = _et_iso_from_ts(exit_ts) or current_time_et().isoformat()
+
+    effective_exit_price = safe_float(exit_price, None)
+    if effective_exit_price is None:
+        effective_exit_price = safe_float(settlement_value, entry_price)
+    if effective_exit_price is None:
+        effective_exit_price = entry_price
+
+    realized_pnl = (float(effective_exit_price) - float(entry_price)) * int(closed_contracts)
+    realized_return = None
+    if entry_price not in (None, 0):
+        try:
+            realized_return = (float(effective_exit_price) - float(entry_price)) / float(entry_price)
+        except Exception:
+            realized_return = None
+
+    hold_minutes = None
+    if entry_ts is not None and exit_ts is not None:
+        hold_minutes = max(0.0, (float(exit_ts) - float(entry_ts)) / 60.0)
+
+    trade_id = build_trade_id(
+        contract_ticker=ticker,
+        side=side,
+        entry_timestamp_et=entry_timestamp_et,
+    )
+
+    record = trade_outcome_record(
+        trade_id=trade_id,
+        contract_ticker=ticker,
+        side=side,
+        contracts=int(closed_contracts),
+        entry_timestamp_et=entry_timestamp_et,
+        exit_timestamp_et=exit_timestamp_et,
+        entry_price=entry_price,
+        exit_price=effective_exit_price,
+        settlement_value=safe_float(settlement_value, None),
+        realized_pnl=realized_pnl,
+        realized_return=realized_return,
+        hold_minutes=hold_minutes,
+        exit_reason=safe_str(exit_reason),
+        settled=bool(settled),
+        engine_name="oil_engine_daily",
+        run_id=build_run_id("oil_engine_daily", cycle_timestamp_et=exit_timestamp_et),
+        config_hash_value=config_hash(config),
+        engine_version="v1",
+    )
+    _pending_trade_outcomes_store(state).append(record)
+    logging.info(
+        "Queued trade outcome | ticker=%s | side=%s | contracts=%s | realized_pnl=%s | exit_reason=%s | settled=%s",
+        ticker,
+        side,
+        closed_contracts,
+        realized_pnl,
+        exit_reason,
+        settled,
+    )
+    return record
+
+
+def flush_pending_trade_outcomes(
+    *,
+    ml_writer: MLDataWriter,
+    state: Dict[str, Any],
+) -> int:
+    pending = _pending_trade_outcomes_store(state)
+    if not pending:
+        return 0
+
+    written = 0
+    remaining: List[Dict[str, Any]] = []
+    for record in pending:
+        try:
+            ml_writer.write_trade_outcome(record)
+            written += 1
+        except Exception as exc:
+            logging.warning(
+                "ML trade outcome write failed | trade_id=%s | error=%s",
+                record.get("trade_id"),
+                exc,
+            )
+            remaining.append(record)
+
+    state["pending_trade_outcomes"] = remaining
+    return written
+
+
+def detect_and_close_resolved_paper_positions(
+    *,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    ranked_df: Optional[pd.DataFrame],
+) -> int:
+    records = normalize_paper_positions_records(state.get("paper_positions_cache") or [])
+    open_records = get_open_paper_positions(records)
+    if not open_records:
+        return 0
+
+    ranked_lookup: Dict[str, Dict[str, Any]] = {}
+    if ranked_df is not None and not ranked_df.empty and "contract_ticker" in ranked_df.columns:
+        dedup = ranked_df.drop_duplicates(subset=["contract_ticker"], keep="last")
+        ranked_lookup = {
+            safe_str(row.get("contract_ticker")): (row.to_dict() if hasattr(row, "to_dict") else dict(row))
+            for _, row in dedup.iterrows()
+        }
+
+    now_et = current_time_et()
+    closed_count = 0
+
+    for idx, record in enumerate(list(records)):
+        if safe_upper(record.get("status")) != "OPEN":
+            continue
+
+        ticker = safe_str(record.get("ticker"))
+        side = safe_upper(record.get("side"))
+        row = ranked_lookup.get(ticker) or {}
+
+        resolution_time_text = row.get("resolution_time_et")
+        hours_left = safe_float(row.get("hours_left"), None)
+        strike = safe_float(row.get("strike"), None)
+        oil_price = safe_float(row.get("oil_price"), safe_float((state.get("last_results") or {}).get("price"), None))
+        decision_state = safe_upper(row.get("decision_state"))
+        fair_prob = pick_model_prob_from_row(row, None)
+
+        resolved = False
+        if hours_left is not None and hours_left <= 0:
+            resolved = True
+        elif resolution_time_text:
+            try:
+                resolution_dt = pd.Timestamp(resolution_time_text)
+                if resolution_dt.tzinfo is None:
+                    resolution_dt = resolution_dt.tz_localize(now_et.tzinfo)
+                else:
+                    resolution_dt = resolution_dt.tz_convert(now_et.tzinfo)
+                if resolution_dt.to_pydatetime() <= now_et:
+                    resolved = True
+            except Exception:
+                pass
+        elif decision_state in {"EXIT_RESOLVED", "CONTRACT_RESOLVED", "RESOLVED"}:
+            resolved = True
+
+        if not resolved:
+            continue
+
+        settlement_yes = None
+        if oil_price is not None and strike is not None:
+            settlement_yes = 1.0 if float(oil_price) >= float(strike) else 0.0
+        elif fair_prob is not None:
+            settlement_yes = 1.0 if float(fair_prob) >= 0.5 else 0.0
+
+        if settlement_yes is None:
+            logging.info(
+                "Resolved paper position skipped due to missing settlement basis | ticker=%s | strike=%s | oil_price=%s | fair_prob=%s",
+                ticker,
+                strike,
+                oil_price,
+                fair_prob,
+            )
+            continue
+
+        settlement_value = 1.0 if (side == "YES" and settlement_yes == 1.0) or (side == "NO" and settlement_yes == 0.0) else 0.0
+        contracts = abs(safe_int(record.get("contracts"), 0) or 0)
+        if contracts <= 0:
+            continue
+
+        prior_record = dict(record)
+        records[idx]["contracts"] = 0
+        records[idx]["status"] = "CLOSED"
+        records[idx]["updated_at"] = time.time()
+        records[idx]["exit_time"] = time.time()
+        records[idx]["exit_reason"] = "CONTRACT_RESOLVED"
+        records[idx]["settlement_value"] = settlement_value
+
+        current_cash = ensure_paper_cash_balance_initialized(state, config)
+        state["paper_cash_balance"] = round(current_cash + (contracts * settlement_value), 2)
+
+        _append_trade_outcome_for_closed_position(
+            state=state,
+            config=config,
+            position_before_close=prior_record,
+            closed_contracts=contracts,
+            exit_price=settlement_value,
+            settlement_value=settlement_value,
+            exit_reason="CONTRACT_RESOLVED",
+            settled=True,
+            exit_timestamp_ts=time.time(),
+        )
+
+        logging.info(
+            "Paper position resolved and closed | ticker=%s | side=%s | contracts=%s | settlement_value=%s | oil_price=%s | strike=%s",
+            ticker,
+            side,
+            contracts,
+            settlement_value,
+            oil_price,
+            strike,
+        )
+        closed_count += 1
+
+    if closed_count > 0:
+        state["paper_positions_cache"] = records
+        persist_paper_positions(config, records, note="resolved_contract_close")
+
+    return closed_count
+
+
 def _apply_entry_fill_to_paper_positions(
     *,
     intent: Dict[str, Any],
@@ -670,6 +918,7 @@ def _apply_exit_fill_to_paper_positions(
         return
 
     existing = dict(records[idx])
+    prior_existing = dict(existing)
     held_contracts = abs(safe_int(existing.get("contracts"), 0) or 0)
     if held_contracts <= 0:
         existing["status"] = "CLOSED"
@@ -716,6 +965,19 @@ def _apply_exit_fill_to_paper_positions(
     records[idx] = existing
     state["paper_positions_cache"] = records
     persist_paper_positions(config, records, note="exit_fill_applied")
+
+    if closed_contracts > 0:
+        _append_trade_outcome_for_closed_position(
+            state=state,
+            config=config,
+            position_before_close=prior_existing,
+            closed_contracts=closed_contracts,
+            exit_price=exit_price,
+            settlement_value=None,
+            exit_reason=safe_str(intent.get("reason") or intent.get("reconciliation_reason") or "EXIT_FILLED"),
+            settled=False,
+            exit_timestamp_ts=now_ts,
+        )
 
     if contracts_to_close > held_contracts:
         logging.warning(
@@ -5605,6 +5867,26 @@ def main():
                             filtered_positions_df=open_positions_df,
                         )
 
+            if execution_mode == EXECUTION_MODE_SIMULATION:
+                resolved_closes = detect_and_close_resolved_paper_positions(
+                    state=runtime_state,
+                    config=config,
+                    ranked_df=ranked_df,
+                )
+                if resolved_closes > 0:
+                    paper_positions_records = normalize_paper_positions_records(
+                        runtime_state.get("paper_positions_cache") or []
+                    )
+                    paper_open_records = get_open_paper_positions(paper_positions_records)
+                    open_positions_df = normalize_paper_positions_for_monitoring(
+                        paper_open_records,
+                        ranked_df,
+                    )
+                    account_snapshot = build_paper_account_snapshot(
+                        runtime_state,
+                        open_positions_df=open_positions_df,
+                    )
+
             exit_df = compute_position_exit_df(
                 results,
                 config,
@@ -5729,12 +6011,22 @@ def main():
                     safe_float(account_snapshot.get("portfolio_value"), 0.0),
                 )
 
+            try:
+                written_trade_outcomes = flush_pending_trade_outcomes(
+                    ml_writer=ml_writer,
+                    state=runtime_state,
+                )
+                if written_trade_outcomes > 0:
+                    upload_ml_logs()
+            except Exception as exc:
+                logging.warning("Trade outcome flush/upload failed | error=%s", exc)
+
             write_paper_trade_action_log(
                 config=config,
                 phase="order_reconciliation",
                 actions=(execution_plan or {}).get("all_actions") or [],
                 state=runtime_state,
-                extra={"reconciliation_summary": order_reconciliation_summary or {}, "prune_summary": prune_summary or {}},
+                extra={"reconciliation_summary": order_reconciliation_summary or {}, "prune_summary": prune_summary or {}, "trade_outcomes_written": written_trade_outcomes if 'written_trade_outcomes' in locals() else 0},
             )
             persist_runtime_state(
                 config,
