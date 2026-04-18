@@ -175,6 +175,7 @@ portfolio_hold:
 # =========================================================
 exit:
 
+  # Existing defensive exits
   hard_stop_loss_pct: -0.10
   early_stop_loss_pct: -0.05
 
@@ -192,6 +193,26 @@ exit:
   allow_stagnation_exit: false
   stagnation_min_profit: 0.02
 
-  # NEW (important stability controls)
+  # Stability / execution quality
   min_profit_exit_pct: 0.02
   max_exit_spread: 0.25
+
+  # Hold strong winners into the final window unless something catastrophic happens
+  hold_to_expiry_enabled: true
+  hold_to_expiry_hours_left: 2.0
+  allow_micro_exits_in_hold_window: false
+
+  # Emergency / break-glass exits
+  emergency_stop_loss_pct: -0.85
+  emergency_price_move: -0.35
+
+  # PHASE-1 DATA GENERATION EXITS
+  # Purpose: unlock realized PnL, trade turnover, and ML labels.
+  enable_micro_pnl_exits: true
+  micro_stop_loss_pct: -0.01
+  micro_profit_take_pct: 0.04
+
+  # Optional future fallback: only turn on if trades still get stuck too long.
+  enable_time_based_exit: false
+  time_based_exit_hours_left: 8.0
+  time_based_min_pnl_pct: -0.005
