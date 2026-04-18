@@ -6236,6 +6236,100 @@ def main():
             logging.info(
                 "Execution orchestration step | phase=PORTFOLIO_AND_ENTRY_INTENTS"
             )
+
+            post_recon_portfolio_plan = build_portfolio_advisory_plan(
+                results,
+                config,
+                open_positions_df=open_positions_df,
+                account_snapshot=account_snapshot,
+            )
+            if post_recon_portfolio_plan is None:
+                post_recon_portfolio_plan = portfolio_plan
+            else:
+                logging.info(
+                    "Post-reconciliation portfolio replan complete | recommendation=%s | reason=%s",
+                    (post_recon_portfolio_plan or {}).get("recommendation"),
+                    (post_recon_portfolio_plan or {}).get("reason"),
+                )
+                log_portfolio_recommendation(post_recon_portfolio_plan)
+
+            post_recon_execution_plan = build_execution_intent_plan(
+                portfolio_plan=post_recon_portfolio_plan,
+                exit_df=pd.DataFrame(),
+                open_positions_df=open_positions_df,
+                account_snapshot=account_snapshot,
+                state=runtime_state,
+            )
+
+            post_recon_entry_actions = [
+                action for action in ((post_recon_execution_plan or {}).get("all_actions") or [])
+                if safe_upper(action.get("action_type")) == "ENTER"
+                and safe_upper(action.get("execution_state")) == EXECUTION_STATE_READY
+            ]
+
+            if post_recon_entry_actions:
+                logging.info(
+                    "Execution orchestration step | phase=POST_RECON_ENTRY_SUBMISSION | ready_entries=%s",
+                    len(post_recon_entry_actions),
+                )
+                post_recon_entry_plan = dict(post_recon_execution_plan or {})
+                post_recon_entry_plan["all_actions"] = post_recon_entry_actions
+                post_recon_entry_plan["entry_actions"] = post_recon_entry_actions
+                post_recon_entry_plan["exit_actions"] = []
+                post_recon_entry_plan["hold_actions"] = []
+                post_recon_entry_plan["planned_exit_count"] = 0
+                post_recon_entry_plan["planned_enter_count"] = len(post_recon_entry_actions)
+                post_recon_entry_plan["informational_hold_count"] = 0
+                post_recon_entry_plan["ready_count"] = len(post_recon_entry_actions)
+                post_recon_entry_plan["skipped_count"] = 0
+                post_recon_entry_plan["awaiting_count"] = 0
+
+                post_recon_submission_summary = process_order_intents(
+                    execution_plan=post_recon_entry_plan,
+                    state=runtime_state,
+                    config=config,
+                )
+                write_paper_trade_action_log(
+                    config=config,
+                    phase="post_reconciliation_entry_submission",
+                    actions=post_recon_entry_actions,
+                    state=runtime_state,
+                    extra={"submission_summary": post_recon_submission_summary or {}},
+                )
+
+                if execution_mode == EXECUTION_MODE_SIMULATION:
+                    paper_positions_records = normalize_paper_positions_records(
+                        runtime_state.get("paper_positions_cache") or []
+                    )
+                    paper_open_records = get_open_paper_positions(paper_positions_records)
+                    open_positions_df = normalize_paper_positions_for_monitoring(
+                        paper_open_records,
+                        ranked_df,
+                    )
+                    account_snapshot = build_paper_account_snapshot(
+                        runtime_state,
+                        open_positions_df=open_positions_df,
+                    )
+                    trade_stats_snapshot = log_trade_stats_line(
+                        state=runtime_state,
+                        open_positions_df=open_positions_df,
+                        account_snapshot=account_snapshot,
+                    )
+
+                prune_summary_post_recon = prune_resolved_order_state(runtime_state)
+                logging.info(
+                    "Post-reconciliation entry submission complete | submitted=%s | pruned_intents=%s | pruned_tracking=%s",
+                    (post_recon_submission_summary or {}).get("submitted_count", 0),
+                    (prune_summary_post_recon or {}).get("removed_intents", 0),
+                    (prune_summary_post_recon or {}).get("removed_tracking", 0),
+                )
+
+                portfolio_plan = post_recon_portfolio_plan
+                execution_plan = post_recon_execution_plan
+            else:
+                portfolio_plan = post_recon_portfolio_plan
+                execution_plan = post_recon_execution_plan
+
             emit_portfolio_alert(
                 portfolio_plan,
                 config,
