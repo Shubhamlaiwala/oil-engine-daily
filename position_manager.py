@@ -1199,5 +1199,3 @@ def evaluate_exit_rules(monitored_positions_df, config):
     for col in exit_eval.columns:
         df[col] = exit_eval[col]
     return df
-
-
