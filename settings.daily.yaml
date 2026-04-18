@@ -123,7 +123,7 @@ portfolio:
   strict_single_event_mode: false
 
   # Position limits
-  max_open_trades: 2
+  max_open_trades: 3
   max_positions_per_event: 2
   max_same_side_positions_per_event: 1
 
