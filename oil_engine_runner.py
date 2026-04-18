@@ -216,6 +216,8 @@ runtime_state: Dict[str, Any] = {
     "paper_positions_cache": [],
     "held_position_state": {},
     "last_trade_ts": None,
+    "last_entry_trade_ts": None,
+    "last_entry_trade_ts_by_key": {},
     "pending_trade_outcomes": [],
 }
 
@@ -1188,16 +1190,62 @@ def get_min_time_between_trades_seconds(config: Dict[str, Any]) -> int:
     return int(runtime_cfg.get("min_time_between_trades_seconds", 300))
 
 
+def build_trade_cooldown_key(ticker: Any, side: Any) -> str:
+    return "||".join([safe_str(ticker), safe_upper(side)])
+
+
 def get_last_trade_timestamp(state: Optional[Dict[str, Any]]) -> Optional[float]:
     if not isinstance(state, dict):
         return None
     return safe_float(state.get("last_trade_ts"), None)
 
 
-def mark_trade_timestamp(state: Optional[Dict[str, Any]], ts: Optional[float] = None) -> None:
+def get_last_entry_trade_timestamp(state: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(state, dict):
+        return None
+    return safe_float(state.get("last_entry_trade_ts"), None)
+
+
+def get_last_entry_trade_timestamp_for_key(
+    state: Optional[Dict[str, Any]],
+    ticker: Any,
+    side: Any,
+) -> Optional[float]:
+    if not isinstance(state, dict):
+        return None
+    per_key = state.get("last_entry_trade_ts_by_key")
+    if not isinstance(per_key, dict):
+        return get_last_entry_trade_timestamp(state)
+    key = build_trade_cooldown_key(ticker, side)
+    return safe_float(per_key.get(key), get_last_entry_trade_timestamp(state))
+
+
+def mark_trade_timestamp(
+    state: Optional[Dict[str, Any]],
+    ts: Optional[float] = None,
+    *,
+    action_type: Optional[str] = None,
+    ticker: Any = None,
+    side: Any = None,
+) -> None:
     if not isinstance(state, dict):
         return
-    state["last_trade_ts"] = float(ts if ts is not None else time.time())
+
+    ts_value = float(ts if ts is not None else time.time())
+    state["last_trade_ts"] = ts_value
+
+    if safe_upper(action_type) != "ENTER":
+        return
+
+    state["last_entry_trade_ts"] = ts_value
+    per_key = state.get("last_entry_trade_ts_by_key")
+    if not isinstance(per_key, dict):
+        per_key = {}
+        state["last_entry_trade_ts_by_key"] = per_key
+
+    key = build_trade_cooldown_key(ticker, side)
+    if key != "||":
+        per_key[key] = ts_value
 
 
 def safe_float(value, default=None):
@@ -2637,13 +2685,17 @@ def validate_execution_action(
                 )
 
         cooldown_seconds = get_min_time_between_trades_seconds(config or {})
-        last_trade_ts = get_last_trade_timestamp(state)
-        if cooldown_seconds > 0 and last_trade_ts is not None:
-            elapsed = max(0.0, time.time() - last_trade_ts)
+        has_any_active_positions = any(
+            abs(safe_int((rec or {}).get("contracts"), 0) or 0) > 0
+            for rec in (live_lookup or {}).values()
+        )
+        last_entry_trade_ts = get_last_entry_trade_timestamp_for_key(state, ticker, side)
+        if cooldown_seconds > 0 and has_any_active_positions and last_entry_trade_ts is not None:
+            elapsed = max(0.0, time.time() - last_entry_trade_ts)
             if elapsed < cooldown_seconds:
                 return (
                     EXECUTION_STATE_SKIPPED_CONFLICT,
-                    f"Trade cooldown active ({elapsed:.0f}s elapsed < {cooldown_seconds}s minimum).",
+                    f"Entry cooldown active for {ticker}/{side} ({elapsed:.0f}s elapsed < {cooldown_seconds}s minimum while positions remain open).",
                 )
         return EXECUTION_STATE_READY, safe_str(action.get("reason")) or "Entry action validated."
 
@@ -4129,7 +4181,13 @@ def process_order_intents(
                 state=state,
                 config=config,
             )
-            mark_trade_timestamp(state, intent["reconciled_at"])
+            mark_trade_timestamp(
+                state,
+                intent["reconciled_at"],
+                action_type=intent.get("type"),
+                ticker=intent.get("ticker"),
+                side=intent.get("side"),
+            )
             log_order_intent(intent, prefix="Order submission")
             summary["submitted_count"] += 1
             summary["filled_count"] += 1
@@ -4456,7 +4514,13 @@ def reconcile_order_intents(
                 config=config,
             )
             if new_state in {ORDER_INTENT_STATE_RECONCILED_FILLED, ORDER_INTENT_STATE_RECONCILED_PARTIAL}:
-                mark_trade_timestamp(state, now_ts)
+                mark_trade_timestamp(
+                    state,
+                    now_ts,
+                    action_type=intent.get("type"),
+                    ticker=intent.get("ticker"),
+                    side=intent.get("side"),
+                )
         else:
             intent["updated_at"] = now_ts
             intent["reconciliation_age_seconds"] = round(age_seconds, 3)
@@ -5670,6 +5734,17 @@ def main():
             )
         runtime_state["held_position_state"] = dict(
             persisted_state.get("held_position_state") or {}
+        )
+        runtime_state["last_trade_ts"] = safe_float(
+            persisted_state.get("last_trade_ts"),
+            runtime_state.get("last_trade_ts"),
+        )
+        runtime_state["last_entry_trade_ts"] = safe_float(
+            persisted_state.get("last_entry_trade_ts"),
+            runtime_state.get("last_entry_trade_ts"),
+        )
+        runtime_state["last_entry_trade_ts_by_key"] = dict(
+            persisted_state.get("last_entry_trade_ts_by_key") or {}
         )
 
     ensure_paper_cash_balance_initialized(runtime_state, config)
