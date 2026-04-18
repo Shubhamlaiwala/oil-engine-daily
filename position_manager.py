@@ -870,6 +870,7 @@ def monitor_open_positions(open_positions_df: pd.DataFrame, ranked_df: pd.DataFr
 
 
 def evaluate_exit_rules(monitored_positions_df, config):
+    import time
     import numpy as np
     import pandas as pd
 
@@ -886,9 +887,16 @@ def evaluate_exit_rules(monitored_positions_df, config):
     max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.25))
 
     enable_micro_pnl_exits = bool(exit_cfg.get("enable_micro_pnl_exits", True))
-    micro_stop_loss_pct = float(exit_cfg.get("micro_stop_loss_pct", -0.01))
+    micro_stop_loss_pct = float(exit_cfg.get("micro_stop_loss_pct", -0.05))
     micro_profit_take_pct = float(exit_cfg.get("micro_profit_take_pct", 0.04))
     allow_micro_exits_in_hold_window = bool(exit_cfg.get("allow_micro_exits_in_hold_window", False))
+    micro_exit_min_hold_seconds = float(exit_cfg.get("micro_exit_min_hold_seconds", 180.0))
+    micro_profit_min_hold_seconds = float(
+        exit_cfg.get("micro_profit_min_hold_seconds", micro_exit_min_hold_seconds)
+    )
+    micro_stop_min_hold_seconds = float(
+        exit_cfg.get("micro_stop_min_hold_seconds", micro_exit_min_hold_seconds)
+    )
 
     enable_time_based_exit = bool(exit_cfg.get("enable_time_based_exit", False))
     time_based_exit_hours_left = float(exit_cfg.get("time_based_exit_hours_left", 8.0))
@@ -969,12 +977,21 @@ def evaluate_exit_rules(monitored_positions_df, config):
             ask_price = _safe_float(row.get("selected_ask", row.get("current_ask")), np.nan)
         return bid_price, ask_price
 
+    def _entry_age_seconds(row):
+        now_ts = time.time()
+        for col in ["entry_time", "opened_at", "created_at", "submitted_at"]:
+            val = _safe_float(row.get(col), np.nan)
+            if pd.notna(val) and val > 0:
+                return max(0.0, now_ts - val)
+        return np.nan
+
     def _rule_eval(row):
         contracts = _safe_float(row.get("contracts"), 0.0)
         current_price = _safe_float(row.get("current_position_price", row.get("current_price")), np.nan)
         entry_price = _resolve_effective_entry_price(row)
         hours_left = _safe_float(row.get("hours_left"), np.nan)
         held_side = _safe_side_from_row(row)
+        entry_age_seconds = _entry_age_seconds(row)
 
         held_state = str(row.get("held_decision_state", "") or "").strip().upper()
         exit_reason_existing = str(row.get("exit_reason", "") or "").strip()
@@ -1014,6 +1031,8 @@ def evaluate_exit_rules(monitored_positions_df, config):
             "max_exit_spread": max_exit_spread,
             "hours_left": hours_left,
             "price_move": price_move,
+            "entry_age_seconds": entry_age_seconds,
+            "micro_exit_min_hold_seconds": micro_exit_min_hold_seconds,
         }
 
         if should_exit_existing or held_state.startswith("EXIT_"):
@@ -1082,21 +1101,50 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
+        micro_stop_hold_ready = (
+            pd.isna(entry_age_seconds) or entry_age_seconds >= micro_stop_min_hold_seconds
+        )
+        micro_profit_hold_ready = (
+            pd.isna(entry_age_seconds) or entry_age_seconds >= micro_profit_min_hold_seconds
+        )
+
         if enable_micro_pnl_exits and pd.notna(pnl_ratio) and pnl_ratio <= micro_stop_loss_pct:
+            if micro_stop_hold_ready:
+                out.update({
+                    "should_exit": True,
+                    "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
+                    "exit_state": "EXIT_MICRO_STOP",
+                    "exit_priority": 70,
+                })
+                return pd.Series(out)
             out.update({
-                "should_exit": True,
-                "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
-                "exit_state": "EXIT_MICRO_STOP",
-                "exit_priority": 70,
+                "should_exit": False,
+                "exit_reason": (
+                    f"HOLD_MICRO_STOP_BUFFER pnl_ratio={pnl_ratio:.4f} "
+                    f"age={entry_age_seconds:.1f}s min_hold={micro_stop_min_hold_seconds:.1f}s"
+                ),
+                "exit_state": "HOLD_MICRO_STOP_BUFFER",
+                "exit_priority": 0,
             })
             return pd.Series(out)
 
         if enable_micro_pnl_exits and pd.notna(pnl_ratio) and pnl_ratio >= micro_profit_take_pct:
+            if micro_profit_hold_ready:
+                out.update({
+                    "should_exit": True,
+                    "exit_reason": f"EXIT_MICRO_PROFIT pnl_ratio={pnl_ratio:.4f}",
+                    "exit_state": "EXIT_MICRO_PROFIT",
+                    "exit_priority": 65,
+                })
+                return pd.Series(out)
             out.update({
-                "should_exit": True,
-                "exit_reason": f"EXIT_MICRO_PROFIT pnl_ratio={pnl_ratio:.4f}",
-                "exit_state": "EXIT_MICRO_PROFIT",
-                "exit_priority": 65,
+                "should_exit": False,
+                "exit_reason": (
+                    f"HOLD_MICRO_PROFIT_BUFFER pnl_ratio={pnl_ratio:.4f} "
+                    f"age={entry_age_seconds:.1f}s min_hold={micro_profit_min_hold_seconds:.1f}s"
+                ),
+                "exit_state": "HOLD_MICRO_PROFIT_BUFFER",
+                "exit_priority": 0,
             })
             return pd.Series(out)
 
@@ -1125,4 +1173,5 @@ def evaluate_exit_rules(monitored_positions_df, config):
     for col in exit_eval.columns:
         df[col] = exit_eval[col]
     return df
+
 
