@@ -7,7 +7,9 @@ runtime:
 
   poll_interval_seconds: 60
   request_timeout_seconds: 20
+  #remove this later
   trade_cooldown_seconds: 120
+  min_time_between_trades_seconds: 120
 
   kalshi_retry_attempts: 4
   kalshi_retry_backoff_seconds: 2.0
