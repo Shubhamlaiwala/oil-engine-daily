@@ -6,8 +6,9 @@ runtime:
   execution_mode: "simulation"
 
   poll_interval_seconds: 60
+  summary_interval_seconds: 120
+
   request_timeout_seconds: 20
-  trade_cooldown_seconds: 120
 
   kalshi_retry_attempts: 4
   kalshi_retry_backoff_seconds: 2.0
@@ -16,19 +17,19 @@ runtime:
   price_cache_seconds: 60
   vol_cache_seconds: 120
 
-  summary_interval_seconds: 120
-
   top_n_display: 5
   market_fetch_limit: 60
   max_market_pages: 3
 
   debug_market_logs: false
 
+  # 🔥 KEY FIX (COOLDOWN REDUCED)
+  min_time_between_trades_seconds: 60
+
   # Order behavior
   live_order_time_in_force: "good_till_cancelled"
   live_exit_order_time_in_force: "good_till_cancelled"
   live_exit_execution_mode: "balanced"
-
   live_max_entry_contracts: 3
 
 # =========================================================
@@ -36,8 +37,6 @@ runtime:
 # =========================================================
 kalshi:
   api_base: "https://api.elections.kalshi.com/trade-api/v2"
-
-  # You can also use market_url instead
   series_ticker: "KXWTI"
   event_ticker: null
   exact_market_ticker: null
@@ -99,6 +98,7 @@ filters:
   min_bid: 0.01
   min_ask: 0.01
   require_two_sided_quotes: false
+
   max_yes_spread: 0.25
   max_no_spread: 0.25
 
@@ -112,20 +112,18 @@ filters:
   max_distance: 20
 
 # =========================================================
-# PORTFOLIO (CONTROLLED MULTI-POSITION MODE)
+# PORTFOLIO (FINAL TUNED)
 # =========================================================
 portfolio:
-
-  # 🔥 KEY CHANGE
   allow_multiple_positions: true
   strict_single_event_mode: false
 
   # Position limits
-  max_open_trades: 2
+  max_open_trades: 3
   max_positions_per_event: 3
   max_same_side_positions_per_event: 2
 
-  # Capital allocation
+  # Capital
   starting_capital: 50.0
   max_total_deploy_fraction: 0.60
   reserve_cash_fraction: 0.40
@@ -137,45 +135,36 @@ portfolio:
   # Risk protection
   stop_trading_if_balance_below: 5.0
 
-  # Entry thresholds
+  # Entry threshold
   min_edge_to_add: 0.10
 
-  # Anti-clustering
+  # Anti-clustering (RELAXED BUT SAFE)
   min_strike_gap_same_event: 1.0
-
   allow_same_event_same_side_add: true
 
 # =========================================================
-# ROTATION LOGIC (VERY IMPORTANT)
+# ROTATION LOGIC
 # =========================================================
 portfolio_rotation:
-
   disable_rotation_exits: false
 
-  # Rotate only if clearly better
   min_edge_improvement: 0.08
-
-  # Keep strong positions
   held_min_edge_to_keep: 0.10
 
-  # Replace weak positions
   stale_held_edge_threshold: 0.06
   stale_held_recovery_edge_threshold: 0.08
 
 # =========================================================
-# HOLD BEHAVIOR
+# HOLD LOGIC
 # =========================================================
 portfolio_hold:
-
   min_edge_to_hold: 0.08
   require_actionable_to_hold: true
 
 # =========================================================
-# EXIT LOGIC
+# EXIT LOGIC (STABLE + ML READY)
 # =========================================================
 exit:
-
-  # Existing defensive exits
   hard_stop_loss_pct: -0.10
   early_stop_loss_pct: -0.05
 
@@ -184,7 +173,6 @@ exit:
 
   edge_collapse_threshold: 0.00
   weak_edge_threshold: 0.03
-
   fair_value_drop_threshold: -0.05
 
   allow_not_tradable_red_exit: true
@@ -193,26 +181,27 @@ exit:
   allow_stagnation_exit: false
   stagnation_min_profit: 0.02
 
-  # Stability / execution quality
   min_profit_exit_pct: 0.02
   max_exit_spread: 0.25
 
-  # Hold strong winners into the final window unless something catastrophic happens
+  # Hold winners near expiry
   hold_to_expiry_enabled: true
   hold_to_expiry_hours_left: 2.0
   allow_micro_exits_in_hold_window: false
 
-  # Emergency / break-glass exits
+  # Emergency failsafe
   emergency_stop_loss_pct: -0.85
   emergency_price_move: -0.35
 
-  # PHASE-1 DATA GENERATION EXITS
-  # Purpose: unlock realized PnL, trade turnover, and ML labels.
+  # 🔥 DATA GENERATION MODE (CRITICAL FOR ML)
   enable_micro_pnl_exits: true
-  micro_stop_loss_pct: -0.01
+  micro_stop_loss_pct: -0.05
   micro_profit_take_pct: 0.04
+  micro_exit_min_hold_seconds: 180
+  micro_stop_min_hold_seconds: 180
+  micro_profit_min_hold_seconds: 180
 
-  # Optional future fallback: only turn on if trades still get stuck too long.
+  # Optional fallback
   enable_time_based_exit: false
   time_based_exit_hours_left: 8.0
   time_based_min_pnl_pct: -0.005
