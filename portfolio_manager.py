@@ -930,51 +930,83 @@ def _position_strike(held_row: Any) -> Optional[float]:
     return _extract_strike_from_ticker(safe_str(safe_row_value(held_row, "ticker", "")))
 
 
-def _candidate_conflicts_with_held(candidate_row: pd.Series, held_row: pd.Series, config: Dict[str, Any]) -> bool:
-    if candidate_row is None or held_row is None:
+def _held_like_from_candidate(row: Any) -> pd.Series:
+    return pd.Series({
+        "ticker": safe_row_value(row, "contract_ticker", safe_row_value(row, "ticker", "")),
+        "event_ticker": _candidate_event(row),
+        "side": _candidate_side(row),
+        "strike": _candidate_strike(row),
+    })
+
+
+def _portfolio_conflict_for_candidate(
+    candidate_row: pd.Series,
+    existing_rows: List[pd.Series],
+    config: Dict[str, Any],
+) -> bool:
+    if candidate_row is None:
+        return True
+    if not existing_rows:
         return False
 
-    candidate_ticker = safe_str(safe_row_value(candidate_row, "contract_ticker", ""))
-    held_ticker = safe_str(safe_row_value(held_row, "ticker", ""))
-    if candidate_ticker == held_ticker:
-        return True
-
     portfolio_cfg = config.get("portfolio", {}) or {}
+    max_positions_per_event = int(portfolio_cfg.get("max_positions_per_event", 2))
+    max_same_side_positions_per_event = int(portfolio_cfg.get("max_same_side_positions_per_event", 1))
     allow_same_event_same_side_add = bool(portfolio_cfg.get("allow_same_event_same_side_add", False))
     min_strike_gap_same_event = float(portfolio_cfg.get("min_strike_gap_same_event", 2.0))
 
-    same_event = _candidate_event(candidate_row) == _position_event(held_row)
-    same_side = _candidate_side(candidate_row) == _position_side(held_row)
+    candidate_ticker = safe_str(safe_row_value(candidate_row, "contract_ticker", safe_row_value(candidate_row, "ticker", "")))
+    candidate_event = _candidate_event(candidate_row)
+    candidate_side = _candidate_side(candidate_row)
+    candidate_strike = _candidate_strike(candidate_row)
 
-    if same_event and same_side and not allow_same_event_same_side_add:
-        return True
+    same_event_rows: List[pd.Series] = []
+    same_event_same_side_count = 0
 
-    if same_event:
-        candidate_strike = _candidate_strike(candidate_row)
-        held_strike = _position_strike(held_row)
-        if candidate_strike is not None and held_strike is not None:
-            if abs(float(candidate_strike) - float(held_strike)) < min_strike_gap_same_event:
+    for existing in existing_rows:
+        existing_ticker = safe_str(safe_row_value(existing, "ticker", safe_row_value(existing, "contract_ticker", "")))
+        if candidate_ticker and existing_ticker and candidate_ticker == existing_ticker:
+            return True
+
+        existing_event = _position_event(existing)
+        existing_side = _position_side(existing)
+        if candidate_event and existing_event and candidate_event == existing_event:
+            same_event_rows.append(existing)
+            if candidate_side and existing_side == candidate_side:
+                same_event_same_side_count += 1
+
+            existing_strike = _position_strike(existing)
+            if (
+                candidate_strike is not None
+                and existing_strike is not None
+                and abs(float(candidate_strike) - float(existing_strike)) < min_strike_gap_same_event
+            ):
                 return True
 
+    if candidate_event and len(same_event_rows) >= max_positions_per_event:
+        return True
+
+    if candidate_side and same_event_same_side_count >= max_same_side_positions_per_event:
+        return True
+
+    if candidate_side and same_event_same_side_count >= 1 and not allow_same_event_same_side_add:
+        return True
+
     return False
 
 
-def _candidate_conflicts_with_planned(candidate_row: pd.Series, planned_entries: List[pd.Series], config: Dict[str, Any]) -> bool:
-    if not planned_entries:
-        return False
-    temp_rows = []
-    for row in planned_entries:
-        temp = pd.Series({
-            "ticker": safe_row_value(row, "contract_ticker", ""),
-            "event_ticker": _candidate_event(row),
-            "side": _candidate_side(row),
-            "strike": _candidate_strike(row),
-        })
-        temp_rows.append(temp)
-    for held_like in temp_rows:
-        if _candidate_conflicts_with_held(candidate_row, held_like, config):
-            return True
-    return False
+def _candidate_conflicts_with_planned(
+    candidate_row: pd.Series,
+    planned_entries: List[pd.Series],
+    config: Dict[str, Any],
+    held_rows: Optional[List[pd.Series]] = None,
+) -> bool:
+    existing_rows: List[pd.Series] = []
+    if held_rows:
+        existing_rows.extend(list(held_rows))
+    if planned_entries:
+        existing_rows.extend([_held_like_from_candidate(row) for row in planned_entries])
+    return _portfolio_conflict_for_candidate(candidate_row, existing_rows, config)
 
 
 def _filter_candidates_for_existing_positions(tradable_df: pd.DataFrame, scored_live: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
@@ -983,14 +1015,10 @@ def _filter_candidates_for_existing_positions(tradable_df: pd.DataFrame, scored_
     if scored_live is None or scored_live.empty:
         return tradable_df.copy()
 
+    held_rows = [row for _, row in scored_live.iterrows()]
     keep_rows: List[int] = []
     for idx, row in tradable_df.iterrows():
-        conflict = False
-        for _, held in scored_live.iterrows():
-            if _candidate_conflicts_with_held(row, held, config):
-                conflict = True
-                break
-        if not conflict:
+        if not _portfolio_conflict_for_candidate(row, held_rows, config):
             keep_rows.append(idx)
     return tradable_df.loc[keep_rows].copy()
 
@@ -1465,7 +1493,7 @@ def _build_multi_position_plan(
     for _, candidate_row in tradable_df.iterrows():
         if slots_remaining <= 0:
             break
-        if _candidate_conflicts_with_planned(candidate_row, planned_entry_rows, config):
+        if _candidate_conflicts_with_planned(candidate_row, planned_entry_rows, config, held_rows=held_rows):
             continue
         entry_instr = build_new_entry_instruction(candidate_row, deployable_remaining, capital, config, live_positions_df=scored_live)
         if entry_instr is None:
