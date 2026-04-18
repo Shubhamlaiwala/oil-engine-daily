@@ -902,14 +902,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
     time_based_exit_hours_left = float(exit_cfg.get("time_based_exit_hours_left", 8.0))
     time_based_min_pnl_pct = float(exit_cfg.get("time_based_min_pnl_pct", -0.005))
 
-    # Temporary validation exit: force a close after a fixed hold duration so
-    # ENTRY -> EXIT -> completed trade row backfill can be validated quickly.
-    enable_validation_time_exit = bool(exit_cfg.get("enable_validation_time_exit", True))
-    validation_exit_minutes = float(exit_cfg.get("validation_exit_minutes", 90.0))
-    validation_exit_reason = str(
-        exit_cfg.get("validation_exit_reason", "TIME_EXIT_VALIDATION")
-    )
-
     def _safe_float(v, default=np.nan):
         try:
             if v is None:
@@ -1087,24 +1079,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        validation_exit_seconds = max(0.0, validation_exit_minutes * 60.0)
-        validation_exit_ready = bool(
-            enable_validation_time_exit
-            and pd.notna(entry_age_seconds)
-            and entry_age_seconds >= validation_exit_seconds
-        )
-
-        if validation_exit_ready:
-            out.update({
-                "should_exit": True,
-                "exit_reason": (
-                    f"{validation_exit_reason} held_minutes={entry_age_seconds / 60.0:.2f}"
-                ),
-                "exit_state": "EXIT_TIME_EXIT_VALIDATION",
-                "exit_priority": 90,
-            })
-            return pd.Series(out)
-
         in_hold_window = bool(
             hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left
         )
@@ -1199,3 +1173,5 @@ def evaluate_exit_rules(monitored_positions_df, config):
     for col in exit_eval.columns:
         df[col] = exit_eval[col]
     return df
+
+
