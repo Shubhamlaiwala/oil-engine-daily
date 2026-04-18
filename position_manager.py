@@ -883,7 +883,16 @@ def evaluate_exit_rules(monitored_positions_df, config):
     hold_to_expiry_hours_left = float(exit_cfg.get("hold_to_expiry_hours_left", 2.0))
     emergency_stop_loss_pct = float(exit_cfg.get("emergency_stop_loss_pct", -0.85))
     emergency_price_move = float(exit_cfg.get("emergency_price_move", -0.35))
-    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.04))
+    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.25))
+
+    enable_micro_pnl_exits = bool(exit_cfg.get("enable_micro_pnl_exits", True))
+    micro_stop_loss_pct = float(exit_cfg.get("micro_stop_loss_pct", -0.01))
+    micro_profit_take_pct = float(exit_cfg.get("micro_profit_take_pct", 0.04))
+    allow_micro_exits_in_hold_window = bool(exit_cfg.get("allow_micro_exits_in_hold_window", False))
+
+    enable_time_based_exit = bool(exit_cfg.get("enable_time_based_exit", False))
+    time_based_exit_hours_left = float(exit_cfg.get("time_based_exit_hours_left", 8.0))
+    time_based_min_pnl_pct = float(exit_cfg.get("time_based_min_pnl_pct", -0.005))
 
     def _safe_float(v, default=np.nan):
         try:
@@ -1007,7 +1016,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
             "price_move": price_move,
         }
 
-        # Respect upstream emergency classifications if they already fired.
         if should_exit_existing or held_state.startswith("EXIT_"):
             out.update({
                 "should_exit": True,
@@ -1025,7 +1033,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        # Expiry / settlement handoff.
         if pd.notna(hours_left) and hours_left <= 0:
             out.update({
                 "should_exit": True,
@@ -1035,36 +1042,6 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        # For daily binaries, the default behavior is to hold through the final window.
-        if hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left:
-            # Only break glass for extreme damage.
-            if pd.notna(pnl_ratio) and pnl_ratio <= emergency_stop_loss_pct:
-                out.update({
-                    "should_exit": True,
-                    "exit_reason": f"EXIT_EMERGENCY_STOP pnl_ratio={pnl_ratio:.4f}",
-                    "exit_state": "EXIT_EMERGENCY_STOP",
-                    "exit_priority": 95,
-                })
-                return pd.Series(out)
-
-            if pd.notna(price_move) and price_move <= emergency_price_move:
-                out.update({
-                    "should_exit": True,
-                    "exit_reason": f"EXIT_EMERGENCY_PRICE_MOVE price_move={price_move:.4f}",
-                    "exit_state": "EXIT_EMERGENCY_PRICE_MOVE",
-                    "exit_priority": 94,
-                })
-                return pd.Series(out)
-
-            out.update({
-                "should_exit": False,
-                "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
-                "exit_state": "HOLD_TO_EXPIRY_WINDOW",
-                "exit_priority": 0,
-            })
-            return pd.Series(out)
-
-        # Outside the final hold window, still be very conservative.
         if pd.notna(pnl_ratio) and pnl_ratio <= emergency_stop_loss_pct:
             out.update({
                 "should_exit": True,
@@ -1083,7 +1060,19 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        # Do not force exits into bad spreads unless this is truly catastrophic.
+        in_hold_window = bool(
+            hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left
+        )
+
+        if in_hold_window and not allow_micro_exits_in_hold_window:
+            out.update({
+                "should_exit": False,
+                "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_state": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_priority": 0,
+            })
+            return pd.Series(out)
+
         if pd.notna(spread) and spread > max_exit_spread:
             out.update({
                 "should_exit": False,
@@ -1092,6 +1081,37 @@ def evaluate_exit_rules(monitored_positions_df, config):
                 "exit_priority": 0,
             })
             return pd.Series(out)
+
+        if enable_micro_pnl_exits and pd.notna(pnl_ratio) and pnl_ratio <= micro_stop_loss_pct:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_MICRO_STOP",
+                "exit_priority": 70,
+            })
+            return pd.Series(out)
+
+        if enable_micro_pnl_exits and pd.notna(pnl_ratio) and pnl_ratio >= micro_profit_take_pct:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_MICRO_PROFIT pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_MICRO_PROFIT",
+                "exit_priority": 65,
+            })
+            return pd.Series(out)
+
+        if enable_time_based_exit and pd.notna(hours_left) and hours_left <= time_based_exit_hours_left:
+            if pd.isna(pnl_ratio) or pnl_ratio <= time_based_min_pnl_pct:
+                reason = f"EXIT_TIME_BASED hours_left={hours_left:.4f}"
+                if pd.notna(pnl_ratio):
+                    reason += f" pnl_ratio={pnl_ratio:.4f}"
+                out.update({
+                    "should_exit": True,
+                    "exit_reason": reason,
+                    "exit_state": "EXIT_TIME_BASED",
+                    "exit_priority": 55,
+                })
+                return pd.Series(out)
 
         out.update({
             "should_exit": False,
