@@ -162,46 +162,46 @@ portfolio_hold:
   require_actionable_to_hold: true
 
 # =========================================================
-# EXIT LOGIC (STABLE + ML READY)
+# EXIT LOGIC (QUALITY-FIRST TUNING)
 # =========================================================
 exit:
-  hard_stop_loss_pct: -0.10
-  early_stop_loss_pct: -0.05
+  # Core loss / gain thresholds
+  hard_stop_loss_pct: -0.12
+  early_stop_loss_pct: -0.08
+  profit_lock_pct: 0.10
+  soft_profit_lock_pct: 0.07
 
-  profit_lock_pct: 0.15
-  soft_profit_lock_pct: 0.08
+  # Thesis deterioration thresholds
+  edge_collapse_threshold: -0.02
+  weak_edge_threshold: 0.02
+  fair_value_drop_threshold: -0.06
+  weak_edge_confirm_cycles: 3
+  weak_fair_confirm_cycles: 3
 
-  edge_collapse_threshold: 0.00
-  weak_edge_threshold: 0.03
-  fair_value_drop_threshold: -0.05
+  # Exit gating
+  min_hold_minutes: 20
+  min_profit_exit_pct: 0.03
+  max_exit_spread: 0.12
 
+  # Keep thesis-based exits available, but not too trigger-happy
   allow_not_tradable_red_exit: true
   allow_non_executable_red_exit: true
-
   allow_stagnation_exit: false
   stagnation_min_profit: 0.02
 
-  min_profit_exit_pct: 0.02
-  max_exit_spread: 0.25
-
-  # Hold winners near expiry
+  # Hold positions into expiry window unless hard evidence says otherwise
   hold_to_expiry_enabled: true
   hold_to_expiry_hours_left: 2.0
-  allow_micro_exits_in_hold_window: false
 
-  # Emergency failsafe
+  # Emergency failsafes only
   emergency_stop_loss_pct: -0.85
   emergency_price_move: -0.35
 
-  # 🔥 DATA GENERATION MODE (CRITICAL FOR ML)
-  enable_micro_pnl_exits: true
+  # Disable aggressive micro exits that were crushing win rate
+  enable_micro_stop: false
   micro_stop_loss_pct: -0.05
-  micro_profit_take_pct: 0.04
-  micro_exit_min_hold_seconds: 180
-  micro_stop_min_hold_seconds: 180
-  micro_profit_min_hold_seconds: 180
 
-  # Optional fallback
+  # Optional time-based cleanup remains off by default
   enable_time_based_exit: false
   time_based_exit_hours_left: 8.0
-  time_based_min_pnl_pct: -0.005
+  time_based_min_pnl_pct: -0.01
