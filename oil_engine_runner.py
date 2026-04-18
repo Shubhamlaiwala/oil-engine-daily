@@ -219,6 +219,13 @@ runtime_state: Dict[str, Any] = {
     "last_entry_trade_ts": None,
     "last_entry_trade_ts_by_key": {},
     "pending_trade_outcomes": [],
+    "trade_stats": {
+        "completed_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "breakeven": 0,
+        "realized_pnl": 0.0,
+    },
 }
 
 remote_log_upload_state: Dict[str, Any] = {"last_upload_ts": 0.0}
@@ -562,6 +569,32 @@ def _pending_trade_outcomes_store(state: Dict[str, Any]) -> List[Dict[str, Any]]
     return store
 
 
+def trade_stats_store(state: Dict[str, Any]) -> Dict[str, Any]:
+    stats = state.get("trade_stats")
+    if not isinstance(stats, dict):
+        stats = {}
+    stats.setdefault("completed_trades", 0)
+    stats.setdefault("wins", 0)
+    stats.setdefault("losses", 0)
+    stats.setdefault("breakeven", 0)
+    stats.setdefault("realized_pnl", 0.0)
+    state["trade_stats"] = stats
+    return stats
+
+
+def _update_trade_stats_for_outcome(state: Dict[str, Any], realized_pnl: Optional[float]) -> None:
+    stats = trade_stats_store(state)
+    pnl_value = safe_float(realized_pnl, 0.0) or 0.0
+    stats["completed_trades"] = safe_int(stats.get("completed_trades"), 0) + 1
+    stats["realized_pnl"] = round((safe_float(stats.get("realized_pnl"), 0.0) or 0.0) + pnl_value, 6)
+    if pnl_value > 1e-12:
+        stats["wins"] = safe_int(stats.get("wins"), 0) + 1
+    elif pnl_value < -1e-12:
+        stats["losses"] = safe_int(stats.get("losses"), 0) + 1
+    else:
+        stats["breakeven"] = safe_int(stats.get("breakeven"), 0) + 1
+
+
 def _et_iso_from_ts(value: Any) -> Optional[str]:
     ts = safe_float(value, None)
     if ts is None:
@@ -643,6 +676,7 @@ def _append_trade_outcome_for_closed_position(
         engine_version="v1",
     )
     _pending_trade_outcomes_store(state).append(record)
+    _update_trade_stats_for_outcome(state, realized_pnl)
     logging.info(
         "Queued trade outcome | ticker=%s | side=%s | contracts=%s | realized_pnl=%s | exit_reason=%s | settled=%s",
         ticker,
@@ -5698,6 +5732,75 @@ def update_runtime_state(
     state["last_account_snapshot"] = account_snapshot
 
 
+
+def build_trade_stats_snapshot(
+    *,
+    state: Dict[str, Any],
+    open_positions_df: Optional[pd.DataFrame],
+    account_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    stats = trade_stats_store(state)
+    open_count = 0
+    unrealized_pnl = 0.0
+
+    if open_positions_df is not None and not open_positions_df.empty:
+        open_count = int(len(open_positions_df))
+        if "unrealized_pnl" in open_positions_df.columns:
+            unrealized_series = pd.to_numeric(open_positions_df["unrealized_pnl"], errors="coerce")
+            unrealized_pnl = float(unrealized_series.fillna(0.0).sum())
+
+    completed = safe_int(stats.get("completed_trades"), 0) or 0
+    wins = safe_int(stats.get("wins"), 0) or 0
+    losses = safe_int(stats.get("losses"), 0) or 0
+    breakeven = safe_int(stats.get("breakeven"), 0) or 0
+    realized_pnl = safe_float(stats.get("realized_pnl"), 0.0) or 0.0
+    decisive_closed = wins + losses
+    win_rate = (100.0 * wins / decisive_closed) if decisive_closed > 0 else 0.0
+
+    cash_balance = safe_float((account_snapshot or {}).get("cash_balance"), None)
+    portfolio_value = safe_float((account_snapshot or {}).get("portfolio_value"), None)
+
+    return {
+        "open_positions": open_count,
+        "completed_trades": completed,
+        "wins": wins,
+        "losses": losses,
+        "breakeven": breakeven,
+        "win_rate": win_rate,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "cash_balance": cash_balance,
+        "portfolio_value": portfolio_value,
+    }
+
+
+def log_trade_stats_line(
+    *,
+    state: Dict[str, Any],
+    open_positions_df: Optional[pd.DataFrame],
+    account_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    snapshot = build_trade_stats_snapshot(
+        state=state,
+        open_positions_df=open_positions_df,
+        account_snapshot=account_snapshot,
+    )
+    logging.info(
+        "TRADE STATS | open=%s | completed=%s | wins=%s | losses=%s | breakeven=%s | win_rate=%.1f%% | realized_pnl=%+.2f | unrealized_pnl=%+.2f | cash=%.2f | portfolio=%.2f",
+        snapshot.get("open_positions", 0),
+        snapshot.get("completed_trades", 0),
+        snapshot.get("wins", 0),
+        snapshot.get("losses", 0),
+        snapshot.get("breakeven", 0),
+        safe_float(snapshot.get("win_rate"), 0.0) or 0.0,
+        safe_float(snapshot.get("realized_pnl"), 0.0) or 0.0,
+        safe_float(snapshot.get("unrealized_pnl"), 0.0) or 0.0,
+        safe_float(snapshot.get("cash_balance"), 0.0) or 0.0,
+        safe_float(snapshot.get("portfolio_value"), 0.0) or 0.0,
+    )
+    return snapshot
+
+
 def main():
     parser = argparse.ArgumentParser(description="Oil Kalshi Decision Engine runner")
     parser.add_argument("--config", default="settings.yaml", help="Path to YAML config")
@@ -5746,8 +5849,12 @@ def main():
         runtime_state["last_entry_trade_ts_by_key"] = dict(
             persisted_state.get("last_entry_trade_ts_by_key") or {}
         )
+        runtime_state["trade_stats"] = dict(
+            persisted_state.get("trade_stats") or runtime_state.get("trade_stats") or {}
+        )
 
     ensure_paper_cash_balance_initialized(runtime_state, config)
+    trade_stats_store(runtime_state)
 
     runtime_cfg = config.get("runtime", {}) or {}
     poll_seconds = int(
@@ -6086,6 +6193,12 @@ def main():
                     safe_float(account_snapshot.get("portfolio_value"), 0.0),
                 )
 
+            trade_stats_snapshot = log_trade_stats_line(
+                state=runtime_state,
+                open_positions_df=open_positions_df,
+                account_snapshot=account_snapshot,
+            )
+
             try:
                 written_trade_outcomes = flush_pending_trade_outcomes(
                     ml_writer=ml_writer,
@@ -6101,7 +6214,7 @@ def main():
                 phase="order_reconciliation",
                 actions=(execution_plan or {}).get("all_actions") or [],
                 state=runtime_state,
-                extra={"reconciliation_summary": order_reconciliation_summary or {}, "prune_summary": prune_summary or {}, "trade_outcomes_written": written_trade_outcomes if 'written_trade_outcomes' in locals() else 0},
+                extra={"reconciliation_summary": order_reconciliation_summary or {}, "prune_summary": prune_summary or {}, "trade_outcomes_written": written_trade_outcomes if 'written_trade_outcomes' in locals() else 0, "trade_stats": trade_stats_snapshot if 'trade_stats_snapshot' in locals() else {}},
             )
             persist_runtime_state(
                 config,
