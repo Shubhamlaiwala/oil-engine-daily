@@ -209,8 +209,11 @@ exit:
   # PHASE-1 DATA GENERATION EXITS
   # Purpose: unlock realized PnL, trade turnover, and ML labels.
   enable_micro_pnl_exits: true
-  micro_stop_loss_pct: -0.01
+  micro_stop_loss_pct: -0.05
   micro_profit_take_pct: 0.04
+  micro_exit_min_hold_seconds: 180
+  micro_stop_min_hold_seconds: 180
+  micro_profit_min_hold_seconds: 180
 
   # Optional future fallback: only turn on if trades still get stuck too long.
   enable_time_based_exit: false
