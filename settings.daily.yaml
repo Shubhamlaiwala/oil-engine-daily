@@ -7,9 +7,7 @@ runtime:
 
   poll_interval_seconds: 60
   request_timeout_seconds: 20
-  #remove this later
   trade_cooldown_seconds: 120
-  min_time_between_trades_seconds: 120
 
   kalshi_retry_attempts: 4
   kalshi_retry_backoff_seconds: 2.0
@@ -123,9 +121,9 @@ portfolio:
   strict_single_event_mode: false
 
   # Position limits
-  max_open_trades: 3
-  max_positions_per_event: 2
-  max_same_side_positions_per_event: 1
+  max_open_trades: 2
+  max_positions_per_event: 3
+  max_same_side_positions_per_event: 2
 
   # Capital allocation
   starting_capital: 50.0
@@ -143,9 +141,9 @@ portfolio:
   min_edge_to_add: 0.10
 
   # Anti-clustering
-  min_strike_gap_same_event: 2.0
+  min_strike_gap_same_event: 1.0
 
-  allow_same_event_same_side_add: false
+  allow_same_event_same_side_add: true
 
 # =========================================================
 # ROTATION LOGIC (VERY IMPORTANT)
@@ -211,11 +209,8 @@ exit:
   # PHASE-1 DATA GENERATION EXITS
   # Purpose: unlock realized PnL, trade turnover, and ML labels.
   enable_micro_pnl_exits: true
-  micro_stop_loss_pct: -0.05
+  micro_stop_loss_pct: -0.01
   micro_profit_take_pct: 0.04
-  micro_exit_min_hold_seconds: 180
-  micro_stop_min_hold_seconds: 180
-  micro_profit_min_hold_seconds: 180
 
   # Optional future fallback: only turn on if trades still get stuck too long.
   enable_time_based_exit: false
