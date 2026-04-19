@@ -749,11 +749,12 @@ def rank_trade_candidates(df):
         ranked["ev_yes"] = 0.0
     if "ev_no" not in ranked.columns:
         ranked["ev_no"] = 0.0
-
     if "ev_yes_exec" not in ranked.columns:
         ranked["ev_yes_exec"] = ranked.get("ev_yes", 0.0)
     if "ev_no_exec" not in ranked.columns:
         ranked["ev_no_exec"] = ranked.get("ev_no", 0.0)
+    if "selected_ev" not in ranked.columns:
+        ranked["selected_ev"] = np.nan
 
     if "no_trade_reason" not in ranked.columns:
         ranked["no_trade_reason"] = ""
@@ -765,62 +766,76 @@ def rank_trade_candidates(df):
         ranked["executable_yes_now"] = False
     if "executable_no_now" not in ranked.columns:
         ranked["executable_no_now"] = False
+    if "selected_executable_now" not in ranked.columns:
+        ranked["selected_executable_now"] = False
 
-    ranked["actionable"] = ranked["action"].fillna("NO_TRADE").isin(["BUY_YES", "BUY_NO"])
-    ranked["watchlist"] = ranked["decision_state"].fillna("").isin(
-        ["WAIT_FOR_PRICE", "PRICE_OK_BUT_SPREAD_TOO_WIDE"]
-    )
+    if "decision_prob" not in ranked.columns:
+        ranked["decision_prob"] = np.nan
 
-    ranked["selected_edge"] = ranked.apply(
-        lambda row: row.get("edge_yes")
-        if str(row.get("action", "")).upper() == "BUY_YES"
-        else row.get("edge_no")
-        if str(row.get("action", "")).upper() == "BUY_NO"
-        else row.get(
-            "selected_edge",
-            max(
-                row.get("edge_yes", float("-inf")),
-                row.get("edge_no", float("-inf")),
-            ),
-        ),
-        axis=1,
-    )
+    ranked["action_upper"] = ranked["action"].astype(str).str.upper()
+    ranked["decision_state_upper"] = ranked["decision_state"].astype(str).str.upper()
+    ranked["entry_style_upper"] = ranked.get("entry_style", "").astype(str).str.upper() if "entry_style" in ranked.columns else ""
+
+    ranked["actionable"] = ranked["action_upper"].isin(["BUY_YES", "BUY_NO"])
+    ranked["watchlist"] = ranked["decision_state_upper"].isin(["WAIT_FOR_PRICE", "PRICE_OK_BUT_SPREAD_TOO_WIDE"])
+
+    ranked["selected_edge"] = pd.to_numeric(ranked.get("selected_edge"), errors="coerce")
+    ranked["edge_yes"] = pd.to_numeric(ranked.get("edge_yes"), errors="coerce")
+    ranked["edge_no"] = pd.to_numeric(ranked.get("edge_no"), errors="coerce")
+    ranked["selected_ev"] = pd.to_numeric(ranked.get("selected_ev"), errors="coerce")
+    ranked["decision_prob"] = pd.to_numeric(ranked.get("decision_prob"), errors="coerce")
 
     ranked["best_edge"] = ranked[["edge_yes", "edge_no"]].max(axis=1)
 
-    ranked["selected_ev"] = ranked.apply(
-        lambda row: row.get("ev_yes_exec")
-        if str(row.get("action", "")).upper() == "BUY_YES"
-        else row.get("ev_no_exec")
-        if str(row.get("action", "")).upper() == "BUY_NO"
-        else max(row.get("ev_yes_exec", 0.0), row.get("ev_no_exec", 0.0)),
-        axis=1,
-    )
-
     if "distance_to_strike" in ranked.columns:
-        ranked["abs_distance_to_strike"] = ranked["distance_to_strike"].abs()
+        ranked["abs_distance_to_strike"] = pd.to_numeric(ranked["distance_to_strike"], errors="coerce").abs()
     else:
         ranked["abs_distance_to_strike"] = np.nan
 
     confidence_rank_map = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
-    ranked["confidence_rank"] = (
-        ranked["confidence"].astype(str).str.upper().map(confidence_rank_map).fillna(0)
+    ranked["confidence_rank"] = ranked["confidence"].astype(str).str.upper().map(confidence_rank_map).fillna(0)
+
+    side_prob_support = np.where(
+        ranked["action_upper"] == "BUY_YES",
+        ranked["decision_prob"],
+        np.where(ranked["action_upper"] == "BUY_NO", 1.0 - ranked["decision_prob"], np.nan),
+    )
+    ranked["side_prob_support"] = pd.to_numeric(pd.Series(side_prob_support, index=ranked.index), errors="coerce")
+
+    actionable_bonus = np.where(ranked["actionable"], 1.0, 0.0)
+    executable_bonus = np.where(ranked["selected_executable_now"].fillna(False), 0.25, 0.0)
+    watchlist_bonus = np.where(ranked["watchlist"], 0.08, 0.0)
+    spread_penalty = np.where(ranked["market_too_wide"].fillna(False), 0.30, 0.0)
+    maker_penalty = np.where(ranked["entry_style_upper"].isin(["LIMIT_MAKER", "WATCHLIST_LIMIT", "MAKER_TARGET"]), 0.08, 0.0)
+    low_prob_penalty = np.where(ranked["side_prob_support"].fillna(0.0) < 0.55, 0.40, 0.0)
+    low_conf_penalty = np.where(ranked["confidence_rank"] <= 1, 0.10, 0.0)
+
+    ranked["candidate_score"] = (
+        ranked["selected_edge"].fillna(-999.0) * 1.00
+        + ranked["selected_ev"].fillna(-999.0) * 0.35
+        + actionable_bonus
+        + executable_bonus
+        + watchlist_bonus
+        - spread_penalty
+        - maker_penalty
+        - low_prob_penalty
+        - low_conf_penalty
     )
 
     ranked = ranked.sort_values(
         by=[
             "actionable",
-            "watchlist",
-            "is_liquid",
+            "selected_executable_now",
+            "candidate_score",
             "selected_edge",
             "confidence_rank",
-            "selected_ev",
+            "side_prob_support",
             "abs_distance_to_strike",
         ],
         ascending=[False, False, False, False, False, False, True],
     ).reset_index(drop=True)
 
-    return ranked.drop(columns=["confidence_rank"], errors="ignore")
+    return ranked.drop(columns=["confidence_rank", "action_upper", "decision_state_upper", "entry_style_upper"], errors="ignore")
 
 
 # =========================================================
@@ -1784,12 +1799,14 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and tradable_yes
             and yes_edge_qualifies
             and yes_strict_ok
+            and fair_yes >= 0.55
         )
         no_side_valid = bool(
             pd.notna(ask_no)
             and tradable_no
             and no_edge_qualifies
             and no_strict_ok
+            and fair_no >= 0.55
         )
         any_valid_side = bool(yes_side_valid or no_side_valid)
 
@@ -1841,28 +1858,36 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             (selected_side == "YES" and yes_side_valid)
             or (selected_side == "NO" and no_side_valid)
         )
+        side_prob_support = fair_yes if selected_side == "YES" else fair_no if selected_side == "NO" else np.nan
         watchlist_candidate = bool(
             selected_side_tradeable
             and pd.notna(selected_edge)
-            and selected_edge >= 0.04
+            and selected_edge >= 0.06
+            and pd.notna(side_prob_support)
+            and side_prob_support >= 0.60
             and not selected_executable_now
+            and not market_too_wide
         )
         limit_entry_allowed = bool(
             selected_side_tradeable
             and pd.notna(selected_edge)
-            and selected_edge >= 0.06
+            and selected_edge >= 0.08
+            and pd.notna(side_prob_support)
+            and side_prob_support >= 0.65
             and not selected_executable_now
             and not market_too_wide
             and not hard_market_skip
         )
 
+        # Disable permissive wide-market promotion unless a setup is both executable and very strong.
         wide_market_override_yes = bool(
             allow_wide_market_edge_override
             and tradable_yes
             and yes_side_valid
-            and (not wide_market_require_executable or executable_yes_now)
+            and executable_yes_now
             and pd.notna(edge_yes)
-            and edge_yes >= wide_market_edge_override_threshold
+            and edge_yes >= max(wide_market_edge_override_threshold, strict_edge + 0.05)
+            and fair_yes >= max(strict_prob, 0.75)
             and (
                 (pd.notna(overround) and overround <= wide_market_max_overround)
                 or (pd.notna(yes_no_ask_sum) and yes_no_ask_sum <= wide_market_max_yes_no_ask_sum)
@@ -1872,9 +1897,10 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             allow_wide_market_edge_override
             and tradable_no
             and no_side_valid
-            and (not wide_market_require_executable or executable_no_now)
+            and executable_no_now
             and pd.notna(edge_no)
-            and edge_no >= wide_market_edge_override_threshold
+            and edge_no >= max(wide_market_edge_override_threshold, strict_edge + 0.05)
+            and fair_no >= max(strict_prob, 0.75)
             and (
                 (pd.notna(overround) and overround <= wide_market_max_overround)
                 or (pd.notna(yes_no_ask_sum) and yes_no_ask_sum <= wide_market_max_yes_no_ask_sum)
@@ -1955,6 +1981,8 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and executable_yes_now
             and pd.notna(edge_yes)
             and yes_edge_qualifies
+            and fair_yes >= 0.65
+            and yes_conf == "HIGH"
         )
         actionable_no = bool(
             (not market_too_wide)
@@ -1965,6 +1993,8 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and executable_no_now
             and pd.notna(edge_no)
             and no_edge_qualifies
+            and fair_no >= 0.65
+            and no_conf == "HIGH"
         )
 
         if held_for_monitoring_only:
@@ -2042,21 +2072,21 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             entry_style = "BLOCKED_BY_SPREAD"
 
         elif limit_entry_allowed and selected_side == "YES":
-            decision_state = "ACTIONABLE"
-            action = "BUY_YES"
+            decision_state = "WAIT_FOR_PRICE"
+            action = "WAIT_FOR_PRICE"
             no_trade_reason = "LIMIT_ENTRY_ALLOWED"
             entry_style = "LIMIT_MAKER"
 
         elif limit_entry_allowed and selected_side == "NO":
-            decision_state = "ACTIONABLE"
-            action = "BUY_NO"
+            decision_state = "WAIT_FOR_PRICE"
+            action = "WAIT_FOR_PRICE"
             no_trade_reason = "LIMIT_ENTRY_ALLOWED"
             entry_style = "LIMIT_MAKER"
 
         elif watchlist_candidate and selected_side:
-            decision_state = "PRICE_OK_BUT_SPREAD_TOO_WIDE"
+            decision_state = "WAIT_FOR_PRICE"
             action = "WAIT_FOR_PRICE"
-            no_trade_reason = "PRICE_OK_BUT_SPREAD_TOO_WIDE"
+            no_trade_reason = "WATCHLIST_LIMIT_REQUIRED"
             entry_style = "WATCHLIST_LIMIT"
 
         elif yes_side_valid and selected_side == "YES":
@@ -2157,6 +2187,8 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             "selected_target_price": selected_target_price,
             "selected_raw_edge": selected_raw_edge,
             "selected_executable_now": selected_executable_now,
+            "side_prob_support": side_prob_support,
+            "candidate_score": np.nan,
             "decision_state": decision_state,
             "entry_style": entry_style,
             "yes_no_ask_sum": yes_no_ask_sum,
