@@ -599,9 +599,9 @@ def compute_confidence(edge):
     edge = pd.to_numeric(edge, errors="coerce")
     if pd.isna(edge):
         return "LOW"
-    if edge >= 0.10:
+    if edge >= 0.20:
         return "HIGH"
-    if edge >= 0.03:
+    if edge >= 0.10:
         return "MEDIUM"
     return "LOW"
 
@@ -724,6 +724,41 @@ def enforce_monotonic_probabilities(df, prob_cols=None):
     return out
 
 
+def _normalized_candidate_score(row):
+    selected_edge = pd.to_numeric(pd.Series([row.get("selected_edge")]), errors="coerce").iloc[0]
+    selected_ev = pd.to_numeric(pd.Series([row.get("selected_ev")]), errors="coerce").iloc[0]
+    side_prob_support = pd.to_numeric(pd.Series([row.get("side_prob_support")]), errors="coerce").iloc[0]
+
+    actionable = bool(str(row.get("action", "")).strip().upper() in {"BUY_YES", "BUY_NO"})
+    executable = bool(row.get("selected_executable_now", False))
+    market_too_wide = bool(row.get("market_too_wide", False))
+    entry_style = str(row.get("entry_style", "") or "").strip().upper()
+    confidence = str(row.get("confidence", "") or "").strip().upper()
+
+    edge_component = float(np.clip(selected_edge if pd.notna(selected_edge) else 0.0, 0.0, 1.0))
+    ev_component = float(np.clip(selected_ev if pd.notna(selected_ev) else 0.0, 0.0, 1.0))
+    prob_component = float(np.clip(side_prob_support if pd.notna(side_prob_support) else 0.0, 0.0, 1.0))
+
+    score = (
+        0.50 * edge_component
+        + 0.20 * ev_component
+        + 0.20 * prob_component
+        + (0.08 if actionable else 0.0)
+        + (0.05 if executable else 0.0)
+    )
+
+    if entry_style in {"LIMIT_MAKER", "WATCHLIST_LIMIT", "MAKER_TARGET"}:
+        score -= 0.08
+    if market_too_wide:
+        score -= 0.15
+    if confidence == "LOW":
+        score -= 0.08
+    elif confidence == "MEDIUM":
+        score -= 0.02
+
+    return float(np.clip(score, 0.0, 1.0))
+
+
 def rank_trade_candidates(df):
     if df is None or df.empty:
         return df
@@ -802,25 +837,7 @@ def rank_trade_candidates(df):
     )
     ranked["side_prob_support"] = pd.to_numeric(pd.Series(side_prob_support, index=ranked.index), errors="coerce")
 
-    actionable_bonus = np.where(ranked["actionable"], 1.0, 0.0)
-    executable_bonus = np.where(ranked["selected_executable_now"].fillna(False), 0.25, 0.0)
-    watchlist_bonus = np.where(ranked["watchlist"], 0.08, 0.0)
-    spread_penalty = np.where(ranked["market_too_wide"].fillna(False), 0.30, 0.0)
-    maker_penalty = np.where(ranked["entry_style_upper"].isin(["LIMIT_MAKER", "WATCHLIST_LIMIT", "MAKER_TARGET"]), 0.08, 0.0)
-    low_prob_penalty = np.where(ranked["side_prob_support"].fillna(0.0) < 0.55, 0.40, 0.0)
-    low_conf_penalty = np.where(ranked["confidence_rank"] <= 1, 0.10, 0.0)
-
-    ranked["candidate_score"] = (
-        ranked["selected_edge"].fillna(-999.0) * 1.00
-        + ranked["selected_ev"].fillna(-999.0) * 0.35
-        + actionable_bonus
-        + executable_bonus
-        + watchlist_bonus
-        - spread_penalty
-        - maker_penalty
-        - low_prob_penalty
-        - low_conf_penalty
-    )
+    ranked["candidate_score"] = ranked.apply(_normalized_candidate_score, axis=1)
 
     ranked = ranked.sort_values(
         by=[
@@ -1859,6 +1876,23 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             or (selected_side == "NO" and no_side_valid)
         )
         side_prob_support = fair_yes if selected_side == "YES" else fair_no if selected_side == "NO" else np.nan
+
+        # Final coherence check between modeled support and quoted price for the selected side.
+        selected_quote = ask_yes if selected_side == "YES" else ask_no if selected_side == "NO" else np.nan
+        selected_dynamic_edge = (
+            (side_prob_support - selected_quote)
+            if pd.notna(side_prob_support) and pd.notna(selected_quote)
+            else np.nan
+        )
+        selected_side_consistent = bool(
+            selected_side in {"YES", "NO"}
+            and pd.notna(side_prob_support)
+            and side_prob_support >= 0.60
+            and pd.notna(selected_dynamic_edge)
+            and selected_dynamic_edge >= dynamic_buy_threshold
+        )
+        if not selected_side_consistent:
+            selected_side_valid = False
         watchlist_candidate = bool(
             selected_side_tradeable
             and pd.notna(selected_edge)
@@ -1983,6 +2017,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and yes_edge_qualifies
             and fair_yes >= 0.65
             and yes_conf == "HIGH"
+            and selected_side_consistent
         )
         actionable_no = bool(
             (not market_too_wide)
@@ -1995,6 +2030,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and no_edge_qualifies
             and fair_no >= 0.65
             and no_conf == "HIGH"
+            and selected_side_consistent
         )
 
         if held_for_monitoring_only:
@@ -2012,13 +2048,13 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         elif actionable_yes:
             decision_state = "ACTIONABLE"
             action = "BUY_YES"
-            no_trade_reason = "ACTIONABLE"
+            no_trade_reason = ""
             entry_style = "TAKER"
 
         elif actionable_no:
             decision_state = "ACTIONABLE"
             action = "BUY_NO"
-            no_trade_reason = "ACTIONABLE"
+            no_trade_reason = ""
             entry_style = "TAKER"
 
         elif wide_market_override_yes:
@@ -2074,13 +2110,13 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         elif limit_entry_allowed and selected_side == "YES":
             decision_state = "WAIT_FOR_PRICE"
             action = "WAIT_FOR_PRICE"
-            no_trade_reason = "LIMIT_ENTRY_ALLOWED"
+            no_trade_reason = "LIMIT_ENTRY_REQUIRED"
             entry_style = "LIMIT_MAKER"
 
         elif limit_entry_allowed and selected_side == "NO":
             decision_state = "WAIT_FOR_PRICE"
             action = "WAIT_FOR_PRICE"
-            no_trade_reason = "LIMIT_ENTRY_ALLOWED"
+            no_trade_reason = "LIMIT_ENTRY_REQUIRED"
             entry_style = "LIMIT_MAKER"
 
         elif watchlist_candidate and selected_side:
