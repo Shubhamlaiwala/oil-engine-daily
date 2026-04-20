@@ -912,6 +912,21 @@ def evaluate_exit_rules(monitored_positions_df, config):
     allow_stagnation_exit = bool(exit_cfg.get("allow_stagnation_exit", False))
     stagnation_min_profit = float(exit_cfg.get("stagnation_min_profit", 0.02))
 
+    # New aggressive lifecycle knobs for faster trade completion
+    stale_exit_minutes = float(exit_cfg.get("stale_exit_minutes", 25.0))
+    stale_exit_seconds = max(min_hold_seconds, stale_exit_minutes * 60.0)
+
+    red_persist_exit_pct = float(exit_cfg.get("red_persist_exit_pct", -0.05))
+    deep_red_exit_pct = float(exit_cfg.get("deep_red_exit_pct", -0.08))
+
+    flat_profit_exit_pct = float(exit_cfg.get("flat_profit_exit_pct", 0.01))
+    stagnant_profit_cap_pct = float(exit_cfg.get("stagnant_profit_cap_pct", 0.03))
+
+    weak_hold_edge_threshold = float(exit_cfg.get("weak_hold_edge_threshold", 0.10))
+    stale_edge_threshold = float(exit_cfg.get("stale_edge_threshold", 0.15))
+
+    spread_hard_block_multiplier = float(exit_cfg.get("spread_hard_block_multiplier", 1.8))
+
     def _safe_float(v, default=np.nan):
         try:
             if v is None:
@@ -995,16 +1010,18 @@ def evaluate_exit_rules(monitored_positions_df, config):
                 return max(0.0, now_ts - val)
         return np.nan
 
-    def _should_block_for_spread(spread, pnl_ratio, edge_collapsed, fair_value_broken, decision_state):
-        if pd.isna(spread) or spread <= max_exit_spread:
+    def _spread_blocks_only_non_urgent_exit(spread, thesis_broken, pnl_ratio, decision_state):
+        if pd.isna(spread):
             return False
-        if pd.notna(pnl_ratio) and pnl_ratio <= hard_stop_loss_pct:
+        if spread <= max_exit_spread:
             return False
-        if edge_collapsed or fair_value_broken:
+        if thesis_broken:
+            return False
+        if pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct:
             return False
         if decision_state in {"NOT_TRADABLE", "NO_TRADE"}:
             return False
-        return True
+        return spread > (max_exit_spread * spread_hard_block_multiplier)
 
     def _rule_eval(row):
         contracts = _safe_float(row.get("contracts"), 0.0)
@@ -1067,6 +1084,7 @@ def evaluate_exit_rules(monitored_positions_df, config):
             "weak_fair_confirm_cycles": weak_fair_confirm_cycles,
         }
 
+        # Preserve explicit upstream exits
         if should_exit_existing or held_state.startswith("EXIT_"):
             out.update({
                 "should_exit": True,
@@ -1093,6 +1111,7 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
+        # Hard emergencies always win
         if pd.notna(pnl_ratio) and pnl_ratio <= emergency_stop_loss_pct:
             out.update({
                 "should_exit": True,
@@ -1118,16 +1137,14 @@ def evaluate_exit_rules(monitored_positions_df, config):
                 "should_exit": True,
                 "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_MICRO_STOP",
-                "exit_priority": 70,
+                "exit_priority": 85,
             })
             return pd.Series(out)
 
         if hold_buffer_active:
             out.update({
                 "should_exit": False,
-                "exit_reason": (
-                    f"HOLD_MIN_TIME_BUFFER age={entry_age_seconds:.1f}s min_hold={min_hold_seconds:.1f}s"
-                ),
+                "exit_reason": f"HOLD_MIN_TIME_BUFFER age={entry_age_seconds:.1f}s min_hold={min_hold_seconds:.1f}s",
                 "exit_state": "HOLD_MIN_TIME_BUFFER",
                 "exit_priority": 0,
             })
@@ -1137,20 +1154,17 @@ def evaluate_exit_rules(monitored_positions_df, config):
         edge_collapsed = pd.notna(current_edge) and current_edge <= edge_collapse_threshold
         fair_value_broken = pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold
         thesis_broken = edge_collapsed or fair_value_broken or weak_edge_confirmed
+
         red_market = decision_state in {"NOT_TRADABLE", "NO_TRADE"} or market_too_wide
         non_exec_red = (not held_executable_now) and red_market
+        stale_trade = bool(pd.notna(entry_age_seconds) and entry_age_seconds >= stale_exit_seconds)
         in_hold_window = bool(hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left)
 
-        if _should_block_for_spread(spread, pnl_ratio, edge_collapsed, fair_value_broken, decision_state):
-            out.update({
-                "should_exit": False,
-                "exit_reason": f"HOLD_SPREAD_TOO_WIDE spread={spread:.4f}",
-                "exit_state": "HOLD_SPREAD_TOO_WIDE",
-            })
-            return pd.Series(out)
+        spread_blocks = _spread_blocks_only_non_urgent_exit(spread, thesis_broken, pnl_ratio, decision_state)
 
+        # 1) Profit capture
         if pd.notna(pnl_ratio) and pnl_ratio >= profit_lock_pct and (
-            thesis_broken or non_exec_red or rotate_candidate
+            thesis_broken or non_exec_red or rotate_candidate or stale_trade
         ):
             out.update({
                 "should_exit": True,
@@ -1161,18 +1175,38 @@ def evaluate_exit_rules(monitored_positions_df, config):
             return pd.Series(out)
 
         if pd.notna(pnl_ratio) and pnl_ratio >= soft_profit_lock_pct and pnl_ratio >= min_profit_exit_pct and (
-            thesis_broken or (allow_non_executable_red_exit and non_exec_red)
+            thesis_broken or stale_trade or (allow_non_executable_red_exit and non_exec_red)
         ):
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_SOFT_PROFIT_DEFEND pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_SOFT_PROFIT_DEFEND",
-                "exit_priority": 72,
+                "exit_priority": 74,
             })
             return pd.Series(out)
 
+        # 2) Pure red persistence exits — new aggressive behavior
+        if pd.notna(pnl_ratio) and pnl_ratio <= deep_red_exit_pct:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_DEEP_RED_PERSIST pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_DEEP_RED_PERSIST",
+                "exit_priority": 79,
+            })
+            return pd.Series(out)
+
+        if pd.notna(pnl_ratio) and pnl_ratio <= red_persist_exit_pct and stale_trade:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_RED_PERSIST_STALE pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_RED_PERSIST_STALE",
+                "exit_priority": 73,
+            })
+            return pd.Series(out)
+
+        # 3) Stop losses no longer require full thesis collapse every time
         if pd.notna(pnl_ratio) and pnl_ratio <= hard_stop_loss_pct and (
-            thesis_broken or red_market or (allow_non_executable_red_exit and non_exec_red)
+            thesis_broken or red_market or stale_trade or (allow_non_executable_red_exit and non_exec_red)
         ):
             out.update({
                 "should_exit": True,
@@ -1182,21 +1216,33 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        if pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct and thesis_broken:
+        if pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct and (
+            thesis_broken or stale_trade or red_market
+        ):
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_EARLY_STOP_LOSS pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_EARLY_STOP_LOSS",
-                "exit_priority": 68,
+                "exit_priority": 69,
             })
             return pd.Series(out)
 
+        # 4) Thesis exits remain
         if edge_collapsed and fair_value_broken:
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_EDGE_COLLAPSED edge={current_edge:.4f} fair_gap={fair_gap:.4f}",
                 "exit_state": "EXIT_EDGE_COLLAPSED",
                 "exit_priority": 66,
+            })
+            return pd.Series(out)
+
+        if fair_value_broken and pd.notna(current_edge) and current_edge <= weak_hold_edge_threshold:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_FAIR_VALUE_COLLAPSED edge={current_edge:.4f} fair_gap={fair_gap:.4f}",
+                "exit_state": "EXIT_FAIR_VALUE_COLLAPSED",
+                "exit_priority": 64,
             })
             return pd.Series(out)
 
@@ -1215,6 +1261,25 @@ def evaluate_exit_rules(monitored_positions_df, config):
                 "exit_reason": f"EXIT_NON_EXECUTABLE_RED pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_NON_EXECUTABLE_RED",
                 "exit_priority": 60,
+            })
+            return pd.Series(out)
+
+        # 5) Stale trade lifecycle exits — new behavior
+        if stale_trade and pd.notna(pnl_ratio) and pnl_ratio <= flat_profit_exit_pct:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_STALE_FLAT pnl_ratio={pnl_ratio:.4f} age={entry_age_seconds:.1f}s",
+                "exit_state": "EXIT_STALE_FLAT",
+                "exit_priority": 58,
+            })
+            return pd.Series(out)
+
+        if stale_trade and pd.notna(pnl_ratio) and pnl_ratio <= stagnant_profit_cap_pct and pd.notna(current_edge) and current_edge <= stale_edge_threshold:
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_STALE_LOW_EDGE pnl_ratio={pnl_ratio:.4f} edge={current_edge:.4f}",
+                "exit_state": "EXIT_STALE_LOW_EDGE",
+                "exit_priority": 57,
             })
             return pd.Series(out)
 
@@ -1237,11 +1302,22 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        if in_hold_window and not thesis_broken and (pd.isna(pnl_ratio) or pnl_ratio > hard_stop_loss_pct):
+        # 6) Hold-to-expiry only if trade is not weak and not stale
+        if in_hold_window and not thesis_broken and not stale_trade and (pd.isna(pnl_ratio) or pnl_ratio > early_stop_loss_pct):
             out.update({
                 "should_exit": False,
                 "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
                 "exit_state": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_priority": 0,
+            })
+            return pd.Series(out)
+
+        # 7) If spread is wide but nothing urgent is wrong, hold
+        if spread_blocks:
+            out.update({
+                "should_exit": False,
+                "exit_reason": f"HOLD_SPREAD_TOO_WIDE spread={spread:.4f}",
+                "exit_state": "HOLD_SPREAD_TOO_WIDE",
                 "exit_priority": 0,
             })
             return pd.Series(out)
@@ -1258,4 +1334,3 @@ def evaluate_exit_rules(monitored_positions_df, config):
     for col in exit_eval.columns:
         df[col] = exit_eval[col]
     return df
-
