@@ -112,7 +112,7 @@ filters:
   max_distance: 20
 
 # =========================================================
-# PORTFOLIO (FINAL TUNED)
+# PORTFOLIO (UPDATED)
 # =========================================================
 portfolio:
   allow_multiple_positions: true
@@ -138,6 +138,14 @@ portfolio:
   # Entry threshold
   min_edge_to_add: 0.10
 
+  # 🔥 PHASE FIX — allow late-session entries too
+  allowed_entry_trading_phases:
+    - ACTIVE_TRADING
+    - CLOSE_ONLY
+  allowed_entry_trading_phases_when_flat:
+    - ACTIVE_TRADING
+    - CLOSE_ONLY
+
   # Anti-clustering (RELAXED BUT SAFE)
   min_strike_gap_same_event: 1.0
   allow_same_event_same_side_add: true
@@ -161,6 +169,8 @@ portfolio_hold:
   min_edge_to_hold: 0.08
   require_actionable_to_hold: true
 
+# =========================================================
+# EXIT LOGIC
 # =========================================================
 exit:
   # Core loss / gain thresholds
@@ -189,13 +199,13 @@ exit:
 
   # 🔥 CRITICAL FIX — DISABLE HOLD TO EXPIRY
   hold_to_expiry_enabled: false
-  hold_to_expiry_hours_left: 2.0  # (kept but ignored now)
+  hold_to_expiry_hours_left: 2.0
 
   # Emergency failsafes
   emergency_stop_loss_pct: -0.85
   emergency_price_move: -0.35
 
-  # Keep micro exits OFF (good decision already)
+  # Keep micro exits OFF
   enable_micro_stop: false
   micro_stop_loss_pct: -0.05
 
