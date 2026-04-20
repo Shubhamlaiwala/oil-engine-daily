@@ -168,53 +168,51 @@ portfolio_rotation:
 portfolio_hold:
   min_edge_to_hold: 0.08
   require_actionable_to_hold: true
-
 exit:
-  # Core loss / gain thresholds
-  hard_stop_loss_pct: -0.10
-  early_stop_loss_pct: -0.06
-  profit_lock_pct: 0.10
-  soft_profit_lock_pct: 0.07
+  # Core thresholds (slightly tighter)
+  hard_stop_loss_pct: -0.08
+  early_stop_loss_pct: -0.05
+  profit_lock_pct: 0.08
+  soft_profit_lock_pct: 0.05
 
-  # Thesis deterioration thresholds
+  # Thesis thresholds (slightly stricter)
   edge_collapse_threshold: -0.02
-  weak_edge_threshold: 0.04
-  fair_value_drop_threshold: -0.04
+  weak_edge_threshold: 0.05
+  fair_value_drop_threshold: -0.03
   weak_edge_confirm_cycles: 2
   weak_fair_confirm_cycles: 2
 
-  # Exit gating
-  min_hold_minutes: 10
+  # 🔥 KEY CHANGE — faster reaction
+  min_hold_minutes: 4
   min_profit_exit_pct: 0.0
-  max_exit_spread: 0.25
+  max_exit_spread: 0.30
 
-  # Allow exits in imperfect conditions
   allow_not_tradable_red_exit: true
   allow_non_executable_red_exit: true
   allow_stagnation_exit: false
   stagnation_min_profit: 0.02
 
-  # Hold-to-expiry disabled
   hold_to_expiry_enabled: false
   hold_to_expiry_hours_left: 2.0
 
-  # Emergency failsafes
   emergency_stop_loss_pct: -0.85
   emergency_price_move: -0.35
 
-  # Optional micro / timed exits
   enable_micro_stop: false
   micro_stop_loss_pct: -0.05
   enable_time_based_exit: false
   time_based_exit_hours_left: 8.0
   time_based_min_pnl_pct: -0.01
 
-  # New aggressive lifecycle exit knobs
-  stale_exit_minutes: 25
-  red_persist_exit_pct: -0.05
-  deep_red_exit_pct: -0.08
-  flat_profit_exit_pct: 0.01
-  stagnant_profit_cap_pct: 0.03
+  # 🔥 AGGRESSIVE LIFECYCLE SETTINGS
+  stale_exit_minutes: 12
+  red_persist_exit_pct: -0.03
+  deep_red_exit_pct: -0.06
+  flat_profit_exit_pct: 0.005
+  stagnant_profit_cap_pct: 0.02
+  weak_hold_edge_threshold: 0.14
+  stale_edge_threshold: 0.20
+  spread_hard_block_multiplier: 1.8
   weak_hold_edge_threshold: 0.10
   stale_edge_threshold: 0.15
   spread_hard_block_multiplier: 1.8
