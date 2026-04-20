@@ -162,46 +162,44 @@ portfolio_hold:
   require_actionable_to_hold: true
 
 # =========================================================
-# EXIT LOGIC (QUALITY-FIRST TUNING)
-# =========================================================
 exit:
   # Core loss / gain thresholds
-  hard_stop_loss_pct: -0.12
-  early_stop_loss_pct: -0.08
+  hard_stop_loss_pct: -0.10
+  early_stop_loss_pct: -0.06
   profit_lock_pct: 0.10
   soft_profit_lock_pct: 0.07
 
   # Thesis deterioration thresholds
   edge_collapse_threshold: -0.02
-  weak_edge_threshold: 0.02
-  fair_value_drop_threshold: -0.06
-  weak_edge_confirm_cycles: 3
-  weak_fair_confirm_cycles: 3
+  weak_edge_threshold: 0.04
+  fair_value_drop_threshold: -0.04
+  weak_edge_confirm_cycles: 2
+  weak_fair_confirm_cycles: 2
 
-  # Exit gating
-  min_hold_minutes: 20
-  min_profit_exit_pct: 0.03
-  max_exit_spread: 0.12
+  # Exit gating (RELAXED)
+  min_hold_minutes: 10
+  min_profit_exit_pct: 0.0
+  max_exit_spread: 0.25
 
-  # Keep thesis-based exits available, but not too trigger-happy
+  # Allow exits even in imperfect conditions
   allow_not_tradable_red_exit: true
   allow_non_executable_red_exit: true
   allow_stagnation_exit: false
   stagnation_min_profit: 0.02
 
-  # Hold positions into expiry window unless hard evidence says otherwise
-  hold_to_expiry_enabled: true
-  hold_to_expiry_hours_left: 2.0
+  # 🔥 CRITICAL FIX — DISABLE HOLD TO EXPIRY
+  hold_to_expiry_enabled: false
+  hold_to_expiry_hours_left: 2.0  # (kept but ignored now)
 
-  # Emergency failsafes only
+  # Emergency failsafes
   emergency_stop_loss_pct: -0.85
   emergency_price_move: -0.35
 
-  # Disable aggressive micro exits that were crushing win rate
+  # Keep micro exits OFF (good decision already)
   enable_micro_stop: false
   micro_stop_loss_pct: -0.05
 
-  # Optional time-based cleanup remains off by default
+  # Keep time-based exit OFF for now
   enable_time_based_exit: false
   time_based_exit_hours_left: 8.0
   time_based_min_pnl_pct: -0.01
