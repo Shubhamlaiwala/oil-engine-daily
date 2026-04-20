@@ -219,6 +219,7 @@ runtime_state: Dict[str, Any] = {
     "last_entry_trade_ts": None,
     "last_entry_trade_ts_by_key": {},
     "pending_trade_outcomes": [],
+    "recent_exit_ts_by_ticker": {},
     "trade_stats": {
         "completed_trades": 0,
         "wins": 0,
@@ -230,6 +231,61 @@ runtime_state: Dict[str, Any] = {
 
 remote_log_upload_state: Dict[str, Any] = {"last_upload_ts": 0.0}
 
+
+
+def get_reentry_cooldown_minutes(config: Dict[str, Any]) -> float:
+    portfolio_cfg = config.get("portfolio", {}) or {}
+    return max(0.0, safe_float(portfolio_cfg.get("reentry_cooldown_minutes"), 0.0) or 0.0)
+
+
+def recent_exit_store(state: Dict[str, Any]) -> Dict[str, float]:
+    store = state.get("recent_exit_ts_by_ticker")
+    if not isinstance(store, dict):
+        store = {}
+        state["recent_exit_ts_by_ticker"] = store
+    cleaned: Dict[str, float] = {}
+    for key, value in list(store.items()):
+        ticker = safe_str(key)
+        ts_value = safe_float(value, None)
+        if ticker and ts_value is not None:
+            cleaned[ticker] = float(ts_value)
+    state["recent_exit_ts_by_ticker"] = cleaned
+    return cleaned
+
+
+def record_recent_exit_ticker(state: Dict[str, Any], ticker: Any, ts: Optional[float] = None) -> None:
+    ticker_text = safe_str(ticker)
+    if not ticker_text:
+        return
+    store = recent_exit_store(state)
+    store[ticker_text] = float(ts if ts is not None else time.time())
+
+
+def get_recently_exited_tickers_for_cooldown(state: Dict[str, Any], config: Dict[str, Any], now_ts: Optional[float] = None) -> List[str]:
+    cooldown_minutes = get_reentry_cooldown_minutes(config)
+    if cooldown_minutes <= 0:
+        state["recent_exit_ts_by_ticker"] = {}
+        return []
+
+    now_value = float(now_ts if now_ts is not None else time.time())
+    cutoff = now_value - (cooldown_minutes * 60.0)
+    store = recent_exit_store(state)
+    active: Dict[str, float] = {}
+    for ticker, ts_value in list(store.items()):
+        if ts_value >= cutoff:
+            active[ticker] = ts_value
+    state["recent_exit_ts_by_ticker"] = active
+    return sorted(active.keys())
+
+
+def attach_recent_exit_cooldown_to_account_snapshot(
+    account_snapshot: Optional[Dict[str, Any]],
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    snapshot = dict(account_snapshot or {})
+    snapshot["recently_exited_tickers"] = get_recently_exited_tickers_for_cooldown(state, config)
+    return snapshot
 
 
 def load_kalshi_private_key():
@@ -816,6 +872,7 @@ def detect_and_close_resolved_paper_positions(
             settled=True,
             exit_timestamp_ts=time.time(),
         )
+        record_recent_exit_ticker(state, ticker, time.time())
 
         logging.info(
             "Paper position resolved and closed | ticker=%s | side=%s | contracts=%s | settlement_value=%s | oil_price=%s | strike=%s",
@@ -1014,6 +1071,7 @@ def _apply_exit_fill_to_paper_positions(
             settled=False,
             exit_timestamp_ts=now_ts,
         )
+        record_recent_exit_ticker(state, ticker, now_ts)
 
     if contracts_to_close > held_contracts:
         logging.warning(
@@ -5852,9 +5910,13 @@ def main():
         runtime_state["trade_stats"] = dict(
             persisted_state.get("trade_stats") or runtime_state.get("trade_stats") or {}
         )
+        runtime_state["recent_exit_ts_by_ticker"] = dict(
+            persisted_state.get("recent_exit_ts_by_ticker") or {}
+        )
 
     ensure_paper_cash_balance_initialized(runtime_state, config)
     trade_stats_store(runtime_state)
+    recent_exit_store(runtime_state)
 
     runtime_cfg = config.get("runtime", {}) or {}
     poll_seconds = int(
@@ -6076,11 +6138,16 @@ def main():
             )
 
             portfolio_input_positions_df = exit_df if exit_df is not None and not exit_df.empty else open_positions_df
+            portfolio_account_snapshot = attach_recent_exit_cooldown_to_account_snapshot(
+                account_snapshot,
+                runtime_state,
+                config,
+            )
             portfolio_plan = build_portfolio_advisory_plan(
                 results,
                 config,
                 open_positions_df=portfolio_input_positions_df,
-                account_snapshot=account_snapshot,
+                account_snapshot=portfolio_account_snapshot,
             )
             if portfolio_plan is None:
                 logging.error("Portfolio plan is None or invalid.")
@@ -6237,11 +6304,16 @@ def main():
                 "Execution orchestration step | phase=PORTFOLIO_AND_ENTRY_INTENTS"
             )
 
+            post_recon_account_snapshot = attach_recent_exit_cooldown_to_account_snapshot(
+                account_snapshot,
+                runtime_state,
+                config,
+            )
             post_recon_portfolio_plan = build_portfolio_advisory_plan(
                 results,
                 config,
                 open_positions_df=open_positions_df,
-                account_snapshot=account_snapshot,
+                account_snapshot=post_recon_account_snapshot,
             )
             if post_recon_portfolio_plan is None:
                 post_recon_portfolio_plan = portfolio_plan
