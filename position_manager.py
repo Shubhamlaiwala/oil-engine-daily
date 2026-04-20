@@ -869,6 +869,7 @@ def monitor_open_positions(open_positions_df: pd.DataFrame, ranked_df: pd.DataFr
     return monitored
 
 
+
 def evaluate_exit_rules(monitored_positions_df, config):
     import time
     import numpy as np
@@ -880,24 +881,24 @@ def evaluate_exit_rules(monitored_positions_df, config):
     df = monitored_positions_df.copy()
     exit_cfg = config.get("exit", {}) or {}
 
-    hold_to_expiry_enabled = bool(exit_cfg.get("hold_to_expiry_enabled", True))
-    hold_to_expiry_hours_left = float(exit_cfg.get("hold_to_expiry_hours_left", 2.0))
+    hold_to_expiry_enabled = bool(exit_cfg.get("hold_to_expiry_enabled", False))
+    hold_to_expiry_hours_left = float(exit_cfg.get("hold_to_expiry_hours_left", 1.0))
     emergency_stop_loss_pct = float(exit_cfg.get("emergency_stop_loss_pct", -0.85))
     emergency_price_move = float(exit_cfg.get("emergency_price_move", -0.35))
-    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.12))
+    max_exit_spread = float(exit_cfg.get("max_exit_spread", 0.25))
 
-    hard_stop_loss_pct = float(exit_cfg.get("hard_stop_loss_pct", -0.12))
-    early_stop_loss_pct = float(exit_cfg.get("early_stop_loss_pct", -0.08))
+    hard_stop_loss_pct = float(exit_cfg.get("hard_stop_loss_pct", -0.10))
+    early_stop_loss_pct = float(exit_cfg.get("early_stop_loss_pct", -0.06))
     profit_lock_pct = float(exit_cfg.get("profit_lock_pct", 0.10))
     soft_profit_lock_pct = float(exit_cfg.get("soft_profit_lock_pct", 0.07))
     edge_collapse_threshold = float(exit_cfg.get("edge_collapse_threshold", -0.02))
-    weak_edge_threshold = float(exit_cfg.get("weak_edge_threshold", 0.02))
-    fair_value_drop_threshold = float(exit_cfg.get("fair_value_drop_threshold", -0.06))
-    min_profit_exit_pct = float(exit_cfg.get("min_profit_exit_pct", 0.03))
+    weak_edge_threshold = float(exit_cfg.get("weak_edge_threshold", 0.04))
+    fair_value_drop_threshold = float(exit_cfg.get("fair_value_drop_threshold", -0.04))
+    min_profit_exit_pct = float(exit_cfg.get("min_profit_exit_pct", 0.00))
 
-    min_hold_minutes = float(exit_cfg.get("min_hold_minutes", 20.0))
+    min_hold_minutes = float(exit_cfg.get("min_hold_minutes", 10.0))
     min_hold_seconds = max(0.0, min_hold_minutes * 60.0)
-    weak_edge_confirm_cycles = int(exit_cfg.get("weak_edge_confirm_cycles", 3))
+    weak_edge_confirm_cycles = int(exit_cfg.get("weak_edge_confirm_cycles", 2))
     weak_fair_confirm_cycles = int(exit_cfg.get("weak_fair_confirm_cycles", weak_edge_confirm_cycles))
 
     enable_micro_stop = bool(exit_cfg.get("enable_micro_stop", False))
@@ -1016,11 +1017,12 @@ def evaluate_exit_rules(monitored_positions_df, config):
         current_edge = _safe_float(row.get("current_edge"), np.nan)
         fair_gap = _safe_float(row.get("fair_price_gap"), np.nan)
         fair_prob_drop = _safe_float(row.get("fair_prob_drop"), np.nan)
-        held_executable_now = _safe_bool(row.get("held_executable_now", row.get("executable_yes_now") if held_side == "YES" else row.get("executable_no_now")))
+        held_executable_now = _safe_bool(
+            row.get("held_executable_now", row.get("executable_yes_now") if held_side == "YES" else row.get("executable_no_now"))
+        )
         decision_state = str(row.get("decision_state", "") or "").strip().upper()
 
         weak_cycles = int(_safe_float(row.get("weak_cycles"), 0) or 0)
-        exit_attempts = int(_safe_float(row.get("exit_attempts"), 0) or 0)
 
         bid_price, ask_price = _exit_prices_from_row(row, held_side)
         spread = ask_price - bid_price if pd.notna(bid_price) and pd.notna(ask_price) else np.nan
@@ -1057,11 +1059,7 @@ def evaluate_exit_rules(monitored_positions_df, config):
             return pd.Series(out)
 
         if pd.isna(current_price) or pd.isna(entry_price) or entry_price <= 0:
-            out.update({
-                "should_exit": False,
-                "exit_reason": "INVALID_EXIT_DATA_HOLD",
-                "exit_state": "HOLD_INVALID_DATA",
-            })
+            out.update({"exit_reason": "INVALID_EXIT_DATA_HOLD", "exit_state": "HOLD_INVALID_DATA"})
             return pd.Series(out)
 
         if pd.notna(hours_left) and hours_left <= 0:
@@ -1091,123 +1089,123 @@ def evaluate_exit_rules(monitored_positions_df, config):
             })
             return pd.Series(out)
 
-        if pd.notna(spread) and spread > max_exit_spread:
-            out.update({
-                "should_exit": False,
-                "exit_reason": f"HOLD_SPREAD_TOO_WIDE spread={spread:.4f}",
-                "exit_state": "HOLD_SPREAD_TOO_WIDE",
-                "exit_priority": 0,
-            })
-            return pd.Series(out)
-
-        in_hold_window = bool(hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left)
         hold_buffer_active = bool(pd.notna(entry_age_seconds) and entry_age_seconds < min_hold_seconds)
-
-        if enable_micro_stop and pd.notna(pnl_ratio) and pnl_ratio <= micro_stop_loss_pct:
-            if not hold_buffer_active:
-                out.update({
-                    "should_exit": True,
-                    "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
-                    "exit_state": "EXIT_MICRO_STOP",
-                    "exit_priority": 70,
-                })
-                return pd.Series(out)
+        if enable_micro_stop and pd.notna(pnl_ratio) and pnl_ratio <= micro_stop_loss_pct and not hold_buffer_active:
             out.update({
-                "should_exit": False,
-                "exit_reason": (
-                    f"HOLD_MIN_TIME_BUFFER pnl_ratio={pnl_ratio:.4f} "
-                    f"age={entry_age_seconds:.1f}s min_hold={min_hold_seconds:.1f}s"
-                ),
-                "exit_state": "HOLD_MIN_TIME_BUFFER",
-                "exit_priority": 0,
+                "should_exit": True,
+                "exit_reason": f"EXIT_MICRO_STOP pnl_ratio={pnl_ratio:.4f}",
+                "exit_state": "EXIT_MICRO_STOP",
+                "exit_priority": 70,
             })
             return pd.Series(out)
 
         if hold_buffer_active:
             out.update({
-                "should_exit": False,
-                "exit_reason": (
-                    f"HOLD_MIN_TIME_BUFFER age={entry_age_seconds:.1f}s min_hold={min_hold_seconds:.1f}s"
-                ),
+                "exit_reason": f"HOLD_MIN_TIME_BUFFER age={entry_age_seconds:.1f}s min_hold={min_hold_seconds:.1f}s",
                 "exit_state": "HOLD_MIN_TIME_BUFFER",
-                "exit_priority": 0,
             })
             return pd.Series(out)
 
-        weak_edge_confirmed = pd.notna(current_edge) and current_edge <= weak_edge_threshold and weak_cycles >= weak_edge_confirm_cycles
-        edge_collapsed = pd.notna(current_edge) and current_edge <= edge_collapse_threshold and weak_cycles >= weak_edge_confirm_cycles
-        fair_value_broken = pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold and weak_cycles >= weak_fair_confirm_cycles
+        edge_collapsed = pd.notna(current_edge) and current_edge <= edge_collapse_threshold and weak_cycles >= max(1, weak_edge_confirm_cycles)
+        weak_edge_confirmed = pd.notna(current_edge) and current_edge <= weak_edge_threshold and weak_cycles >= max(1, weak_edge_confirm_cycles)
+        fair_value_broken = pd.notna(fair_gap) and fair_gap <= fair_value_drop_threshold and weak_cycles >= max(1, weak_fair_confirm_cycles)
+        fair_value_soft = pd.notna(fair_gap) and fair_gap <= max(-0.01, fair_value_drop_threshold / 2.0)
+        loss_confirmed = pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct
+        hard_loss_confirmed = pd.notna(pnl_ratio) and pnl_ratio <= hard_stop_loss_pct
 
-        if pd.notna(pnl_ratio) and pnl_ratio >= profit_lock_pct and (edge_collapsed or fair_value_broken or (not held_executable_now and weak_edge_confirmed)):
+        # Strong exits should not be blocked by spread.
+        high_priority_exit = False
+
+        if pd.notna(pnl_ratio) and pnl_ratio >= profit_lock_pct and (
+            edge_collapsed or fair_value_broken or fair_value_soft or not held_executable_now
+        ):
+            high_priority_exit = True
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_PROFIT_LOCK pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_PROFIT_LOCK",
                 "exit_priority": 80,
             })
-            return pd.Series(out)
 
-        if pd.notna(pnl_ratio) and pnl_ratio >= soft_profit_lock_pct and pnl_ratio >= min_profit_exit_pct and (edge_collapsed or fair_value_broken):
+        elif pd.notna(pnl_ratio) and pnl_ratio >= soft_profit_lock_pct and (
+            edge_collapsed or fair_value_broken or fair_value_soft or (weak_edge_confirmed and not held_executable_now)
+        ):
+            high_priority_exit = True
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_SOFT_PROFIT_DEFEND pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_SOFT_PROFIT_DEFEND",
                 "exit_priority": 72,
             })
-            return pd.Series(out)
 
-        if pd.notna(pnl_ratio) and pnl_ratio <= hard_stop_loss_pct and (edge_collapsed or fair_value_broken or decision_state in {"NOT_TRADABLE", "NO_TRADE"}):
+        elif hard_loss_confirmed and (edge_collapsed or fair_value_broken or decision_state in {"NOT_TRADABLE", "NO_TRADE"}):
+            high_priority_exit = True
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_HARD_STOP_LOSS pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_HARD_STOP_LOSS",
                 "exit_priority": 78,
             })
-            return pd.Series(out)
 
-        if pd.notna(pnl_ratio) and pnl_ratio <= early_stop_loss_pct and (edge_collapsed or fair_value_broken):
+        elif loss_confirmed and (edge_collapsed or fair_value_broken or fair_value_soft):
+            high_priority_exit = True
             out.update({
                 "should_exit": True,
                 "exit_reason": f"EXIT_EARLY_STOP_LOSS pnl_ratio={pnl_ratio:.4f}",
                 "exit_state": "EXIT_EARLY_STOP_LOSS",
                 "exit_priority": 68,
             })
-            return pd.Series(out)
 
-        if edge_collapsed and fair_value_broken:
+        elif edge_collapsed and (fair_value_soft or fair_value_broken or pd.notna(pnl_ratio)):
+            high_priority_exit = True
             out.update({
                 "should_exit": True,
-                "exit_reason": f"EXIT_EDGE_COLLAPSED edge={current_edge:.4f} fair_gap={fair_gap:.4f}",
+                "exit_reason": f"EXIT_EDGE_COLLAPSED edge={current_edge:.4f}",
                 "exit_state": "EXIT_EDGE_COLLAPSED",
                 "exit_priority": 66,
             })
-            return pd.Series(out)
 
-        if enable_time_based_exit and pd.notna(hours_left) and hours_left <= time_based_exit_hours_left:
+        elif fair_value_broken and (pd.notna(pnl_ratio) and pnl_ratio >= min_profit_exit_pct or weak_edge_confirmed):
+            high_priority_exit = True
+            out.update({
+                "should_exit": True,
+                "exit_reason": f"EXIT_FAIR_VALUE_COLLAPSED fair_gap={fair_gap:.4f}",
+                "exit_state": "EXIT_FAIR_VALUE_COLLAPSED",
+                "exit_priority": 64,
+            })
+
+        elif enable_time_based_exit and pd.notna(hours_left) and hours_left <= time_based_exit_hours_left:
             if pd.isna(pnl_ratio) or pnl_ratio <= time_based_min_pnl_pct:
+                high_priority_exit = True
                 out.update({
                     "should_exit": True,
                     "exit_reason": f"EXIT_TIME_BASED hours_left={hours_left:.4f} pnl_ratio={_safe_float(pnl_ratio, 0.0):.4f}",
                     "exit_state": "EXIT_TIME_BASED",
                     "exit_priority": 55,
                 })
-                return pd.Series(out)
 
-        if in_hold_window:
+        # Only low-priority exits are blocked by spread.
+        if out["should_exit"] and pd.notna(spread) and spread > max_exit_spread and out["exit_priority"] < 75:
             out.update({
                 "should_exit": False,
-                "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
-                "exit_state": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_reason": f"HOLD_SPREAD_TOO_WIDE spread={spread:.4f} blocked={out['exit_state']}",
+                "exit_state": "HOLD_SPREAD_TOO_WIDE",
                 "exit_priority": 0,
             })
             return pd.Series(out)
 
-        out.update({
-            "should_exit": False,
-            "exit_reason": "HOLD_QUALITY_DEFAULT",
-            "exit_state": "HOLD",
-            "exit_priority": 0,
-        })
+        if out["should_exit"]:
+            return pd.Series(out)
+
+        in_hold_window = bool(hold_to_expiry_enabled and pd.notna(hours_left) and hours_left <= hold_to_expiry_hours_left)
+        if in_hold_window:
+            out.update({
+                "exit_reason": "HOLD_TO_EXPIRY_WINDOW",
+                "exit_state": "HOLD_TO_EXPIRY_WINDOW",
+            })
+            return pd.Series(out)
+
+        out.update({"exit_reason": "HOLD_QUALITY_DEFAULT", "exit_state": "HOLD"})
         return pd.Series(out)
 
     exit_eval = df.apply(_rule_eval, axis=1)
