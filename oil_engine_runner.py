@@ -4192,6 +4192,13 @@ def process_order_intents(
         and safe_upper(action.get("execution_state")) == EXECUTION_STATE_READY
     ]
 
+    recently_exited_tickers = set(get_recently_exited_tickers_for_cooldown(state, config))
+    if recently_exited_tickers:
+        logging.info(
+            "Order submission cooldown state | recently_exited_tickers=%s",
+            sorted(recently_exited_tickers),
+        )
+
     for action in candidate_actions:
         intent = dict(action.get("order_intent") or {})
         if not intent:
@@ -4201,6 +4208,43 @@ def process_order_intents(
         existing = intents_store.get(intent_key)
         summary["built_count"] += 1
         log_order_intent(intent, prefix="Order intent build")
+
+        intent_type = safe_upper(intent.get("type"))
+        intent_ticker = safe_str(intent.get("ticker"))
+        if intent_type == "ENTER" and intent_ticker in recently_exited_tickers:
+            now_ts = time.time()
+            cooldown_reason = (
+                f"Entry blocked by recent-exit cooldown for ticker={intent_ticker}."
+            )
+            intent["state"] = ORDER_INTENT_STATE_SKIPPED_DUPLICATE
+            intent["updated_at"] = now_ts
+            intent["reconciliation_mode"] = mode
+            intent["reconciliation_reason"] = cooldown_reason
+            intent["exchange_response_summary"] = cooldown_reason
+            intents_store[intent_key] = intent
+            tracker[intent_key] = {
+                "action_key": intent_key,
+                "action_type": intent_type,
+                "ticker": intent_ticker,
+                "side": safe_upper(intent.get("side")),
+                "signature": safe_str(intent.get("signature")),
+                "state": EXECUTION_STATE_SKIPPED_CONFLICT,
+                "first_seen_ts": tracker.get(intent_key, {}).get("first_seen_ts", now_ts),
+                "last_seen_ts": now_ts,
+                "reason": cooldown_reason,
+                "resolved": True,
+                "resolved_ts": now_ts,
+                "resolution_reason": cooldown_reason,
+                "baseline_contracts": abs(safe_int((tracker.get(intent_key, {}) or {}).get("baseline_contracts"), 0) or 0),
+            }
+            logging.info(
+                "ENTRY BLOCKED (cooldown) | ticker=%s | side=%s | intent_key=%s | recently_exited=%s",
+                intent_ticker,
+                intent.get("side"),
+                intent_key,
+                sorted(recently_exited_tickers),
+            )
+            continue
 
         if existing:
             existing_state = safe_upper(existing.get("state"))
