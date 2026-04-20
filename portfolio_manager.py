@@ -1454,6 +1454,8 @@ def _build_multi_position_plan(
 ) -> PortfolioPlan:
     tradable_df, watchlist_df = _eligible_tradable_candidates(ranked, config, has_live_positions=not scored_live.empty)
     recently_exited_tickers = _get_recently_exited_tickers(config, account_snapshot)
+    if recently_exited_tickers:
+        logging.info("Portfolio re-entry cooldown active | recently_exited_tickers=%s", sorted(set(recently_exited_tickers)))
     tradable_df = _filter_recently_exited_candidates(tradable_df, recently_exited_tickers, context_label="Portfolio candidates")
     tradable_candidates_count = len(tradable_df)
     watchlist_candidates_count = len(watchlist_df)
@@ -1565,6 +1567,12 @@ def _build_multi_position_plan(
         )
 
     for _, candidate_row in tradable_df.iterrows():
+        if _is_in_reentry_cooldown(candidate_row, recently_exited_tickers):
+            logging.info(
+                "Portfolio candidate skipped inside multi-position loop due to cooldown | ticker=%s",
+                safe_str(safe_row_value(candidate_row, "contract_ticker", safe_row_value(candidate_row, "ticker", ""))),
+            )
+            continue
         if slots_remaining <= 0:
             break
         if _candidate_conflicts_with_planned(candidate_row, planned_entry_rows, config, held_rows=held_rows):
@@ -1686,6 +1694,8 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
 
     tradable_df, watchlist_df = _eligible_tradable_candidates(ranked, config, has_live_positions=not scored_live.empty)
     recently_exited_tickers = _get_recently_exited_tickers(config, account_snapshot)
+    if recently_exited_tickers:
+        logging.info("Portfolio re-entry cooldown active | recently_exited_tickers=%s", sorted(set(recently_exited_tickers)))
     tradable_df = _filter_recently_exited_candidates(tradable_df, recently_exited_tickers, context_label="Portfolio candidates")
     tradable_candidates_count = len(tradable_df)
     watchlist_candidates_count = len(watchlist_df)
