@@ -745,17 +745,19 @@ def _get_max_open_trades(config: Dict[str, Any]) -> int:
 
 def _prefer_settlement_over_roll(config: Dict[str, Any]) -> bool:
     portfolio_hold_cfg = config.get("portfolio_hold", {}) or {}
-    return bool(portfolio_hold_cfg.get("prefer_settlement_over_roll", True))
+    return bool(portfolio_hold_cfg.get("prefer_settlement_over_roll", False))
 
 
 def _held_is_near_settlement(held_row: pd.Series, config: Dict[str, Any]) -> bool:
     portfolio_hold_cfg = config.get("portfolio_hold", {}) or {}
-    hold_window_hours = float(portfolio_hold_cfg.get("hold_to_expiry_window_hours", 6.0))
-    hours_left = _safe_float(safe_row_value(held_row, "hours_left", safe_row_value(held_row, "hours_to_expiry", np.nan)), np.nan)
+    hold_window_hours = float(portfolio_hold_cfg.get("hold_to_expiry_window_hours", 1.0))
+    hours_left = _safe_float(
+        safe_row_value(held_row, "hours_left", safe_row_value(held_row, "hours_to_expiry", np.nan)),
+        np.nan,
+    )
     if pd.notna(hours_left):
         return bool(hours_left <= hold_window_hours)
-    phase = safe_upper(safe_row_value(held_row, "trading_phase", ""))
-    return phase == "CLOSE_ONLY"
+    return False
 
 
 def _same_event_scope(row_a: Any, row_b: Any) -> bool:
@@ -899,9 +901,25 @@ def _same_contract_side(held_row: Any, candidate_row: Any) -> bool:
 def _position_is_protected(held_row: Any, config: Dict[str, Any]) -> bool:
     if held_row is None:
         return False
-    if _prefer_settlement_over_roll(config) and _held_is_near_settlement(held_row, config):
+
+    portfolio_hold_cfg = config.get("portfolio_hold", {}) or {}
+    explicit_protect = bool(safe_row_value(held_row, "protect_from_rotation", False))
+    if explicit_protect:
         return True
-    return False
+
+    if not _prefer_settlement_over_roll(config):
+        return False
+
+    require_positive_pnl = bool(portfolio_hold_cfg.get("protect_only_if_profitable", True))
+    min_pnl_to_protect = float(portfolio_hold_cfg.get("min_pnl_pct_to_protect", 0.08))
+    pnl_pct = _safe_float(
+        safe_row_value(held_row, "pnl_pct", safe_row_value(held_row, "unrealized_pnl_pct", np.nan)),
+        np.nan,
+    )
+    if require_positive_pnl and (pd.isna(pnl_pct) or pnl_pct < min_pnl_to_protect):
+        return False
+
+    return _held_is_near_settlement(held_row, config)
 
 
 def _position_event(held_row: Any) -> str:
@@ -1437,7 +1455,10 @@ def _build_multi_position_plan(
                 )
 
     for row in protected_held + unprotected_held:
-        actions.append(_build_hold_payload(row, "Existing position remains active." if not _position_is_protected(row, config) else "Protected hold-to-settlement position."))
+        hold_reason = "Existing position remains active."
+        if _position_is_protected(row, config):
+            hold_reason = "Protected high-conviction near-settlement position."
+        actions.append(_build_hold_payload(row, hold_reason))
 
     if cash_blocked:
         if actions:
@@ -1630,8 +1651,8 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
         best_held = _pick_best_held(scored_live)
         if _single_position_mode_enabled(config) and best_held is not None:
             hold_reason = "No new tradable candidates, but an existing held position remains active."
-            if _prefer_settlement_over_roll(config) and _held_is_near_settlement(best_held, config):
-                hold_reason = "No new tradable candidates, and held daily position is inside the hold-to-expiry window."
+            if _position_is_protected(best_held, config):
+                hold_reason = "No new tradable candidates, and the held position is explicitly protected near settlement."
             return _build_hold_plan(
                 held_row=best_held,
                 capital=capital,
@@ -1669,10 +1690,10 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
 
         if _should_hold_strict(best_held, best_candidate, config):
             hold_reason = "Held position remains competitive versus current opportunities."
-            if _prefer_settlement_over_roll(config) and _held_is_near_settlement(best_held, config):
-                hold_reason = "Held daily position is within the hold-to-expiry window; keep it through settlement."
+            if _position_is_protected(best_held, config):
+                hold_reason = "Held position is explicitly protected near settlement."
             elif _prefer_settlement_over_roll(config) and _held_is_out_of_scope(best_held, best_candidate):
-                hold_reason = "Held position is outside the current event scope, but daily settlement is preferred over forced rotation."
+                hold_reason = "Held position is outside the current event scope, and settlement preference is enabled."
             return _build_hold_plan(
                 held_row=best_held,
                 capital=capital,
