@@ -1027,6 +1027,56 @@ def _candidate_conflicts_with_planned(
     return _portfolio_conflict_for_candidate(candidate_row, existing_rows, config)
 
 
+def _get_recently_exited_tickers(config: Dict[str, Any], account_snapshot: Optional[Dict[str, Any]] = None) -> List[str]:
+    account_snapshot = account_snapshot or {}
+    raw = config.get("_recently_exited_tickers", account_snapshot.get("recently_exited_tickers", []))
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [safe_str(item) for item in raw if safe_str(item)]
+
+
+def _is_in_reentry_cooldown(candidate_row: pd.Series, recently_exited_tickers: List[str]) -> bool:
+    if candidate_row is None:
+        return False
+    ticker = safe_str(safe_row_value(candidate_row, "contract_ticker", safe_row_value(candidate_row, "ticker", "")))
+    if not ticker:
+        return False
+    return ticker in set(recently_exited_tickers or [])
+
+
+def _filter_recently_exited_candidates(
+    tradable_df: pd.DataFrame,
+    recently_exited_tickers: List[str],
+    context_label: str = "Portfolio candidates",
+) -> pd.DataFrame:
+    if tradable_df is None or tradable_df.empty:
+        return pd.DataFrame() if tradable_df is None else tradable_df.copy()
+    if not recently_exited_tickers:
+        return tradable_df.copy()
+
+    exited_set = {safe_str(t) for t in recently_exited_tickers if safe_str(t)}
+    if not exited_set:
+        return tradable_df.copy()
+
+    working = tradable_df.copy()
+    ticker_series = working["contract_ticker"].astype(str).str.strip() if "contract_ticker" in working.columns else pd.Series([""] * len(working), index=working.index)
+    mask = ~ticker_series.isin(exited_set)
+    removed = working.loc[~mask].copy()
+    filtered = working.loc[mask].copy()
+
+    if not removed.empty:
+        logging.info(
+            "%s skipped by re-entry cooldown | exited_tickers=%s | skipped=%s",
+            context_label,
+            sorted(exited_set),
+            removed["contract_ticker"].astype(str).tolist() if "contract_ticker" in removed.columns else [],
+        )
+
+    return filtered
+
+
 def _filter_candidates_for_existing_positions(tradable_df: pd.DataFrame, scored_live: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     if tradable_df is None or tradable_df.empty:
         return pd.DataFrame() if tradable_df is None else tradable_df.copy()
@@ -1400,8 +1450,11 @@ def _build_multi_position_plan(
     deployable_cash: float,
     cash_blocked: bool,
     config: Dict[str, Any],
+    account_snapshot: Optional[Dict[str, Any]] = None,
 ) -> PortfolioPlan:
     tradable_df, watchlist_df = _eligible_tradable_candidates(ranked, config, has_live_positions=not scored_live.empty)
+    recently_exited_tickers = _get_recently_exited_tickers(config, account_snapshot)
+    tradable_df = _filter_recently_exited_candidates(tradable_df, recently_exited_tickers, context_label="Portfolio candidates")
     tradable_candidates_count = len(tradable_df)
     watchlist_candidates_count = len(watchlist_df)
 
@@ -1632,6 +1685,8 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
         )
 
     tradable_df, watchlist_df = _eligible_tradable_candidates(ranked, config, has_live_positions=not scored_live.empty)
+    recently_exited_tickers = _get_recently_exited_tickers(config, account_snapshot)
+    tradable_df = _filter_recently_exited_candidates(tradable_df, recently_exited_tickers, context_label="Portfolio candidates")
     tradable_candidates_count = len(tradable_df)
     watchlist_candidates_count = len(watchlist_df)
 
@@ -1645,6 +1700,7 @@ def build_portfolio_decision_plan(ranked_df, live_positions_df, config, account_
             deployable_cash=deployable_cash,
             cash_blocked=cash_blocked,
             config=config,
+            account_snapshot=account_snapshot,
         )
 
     if tradable_df.empty:
