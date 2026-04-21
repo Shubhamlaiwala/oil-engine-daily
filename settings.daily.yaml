@@ -104,6 +104,7 @@ portfolio:
 
   # Capital
   starting_capital: 50.0
+  max_capital_deploy: 50.0  
   max_total_deploy_fraction: 0.60
   reserve_cash_fraction: 0.40
   max_single_trade_fraction: 0.20
