@@ -23,7 +23,7 @@ runtime:
 
   debug_market_logs: false
 
-  # 🔥 KEY FIX (COOLDOWN REDUCED)
+  # Trade pacing / anti-spam
   min_time_between_trades_seconds: 60
 
   # Order behavior
@@ -32,32 +32,20 @@ runtime:
   live_exit_execution_mode: "balanced"
   live_max_entry_contracts: 3
 
-# =========================================================
-# KALSHI CONFIG
-# =========================================================
 kalshi:
   api_base: "https://api.elections.kalshi.com/trade-api/v2"
   series_ticker: "KXWTI"
   event_ticker: null
   exact_market_ticker: null
 
-# =========================================================
-# CONTRACT / RESOLUTION
-# =========================================================
 contract:
   fallback_resolution_mode: "today_5pm_et"
 
-# =========================================================
-# MARKET DATA
-# =========================================================
 market_data:
   yahoo_oil_symbols:
     - "CL=F"
     - "USO"
 
-# =========================================================
-# MODEL CONFIG
-# =========================================================
 model:
   drift: 0.0
   drift_window: 30
@@ -84,16 +72,10 @@ model:
   touch_paths: 2000
   touch_steps: 40
 
-# =========================================================
-# TRADING PHASES
-# =========================================================
 trading_phases:
   observe_only_above_hours: 72
   active_trading_above_hours: 12
 
-# =========================================================
-# LIQUIDITY FILTERS
-# =========================================================
 filters:
   min_bid: 0.01
   min_ask: 0.01
@@ -111,9 +93,6 @@ filters:
   min_distance: 5
   max_distance: 20
 
-# =========================================================
-# PORTFOLIO (UPDATED)
-# =========================================================
 portfolio:
   allow_multiple_positions: true
   strict_single_event_mode: false
@@ -138,7 +117,7 @@ portfolio:
   # Entry threshold
   min_edge_to_add: 0.10
 
-  # 🔥 PHASE FIX — allow late-session entries too
+  # Entry phases
   allowed_entry_trading_phases:
     - ACTIVE_TRADING
     - CLOSE_ONLY
@@ -146,16 +125,13 @@ portfolio:
     - ACTIVE_TRADING
     - CLOSE_ONLY
 
-  # Anti-clustering (RELAXED BUT SAFE)
+  # Anti-clustering
   min_strike_gap_same_event: 1.0
   allow_same_event_same_side_add: true
 
-  # Re-entry cooldown (runner should pass recently exited tickers)
+  # Re-entry cooldown
   reentry_cooldown_minutes: 10
 
-# =========================================================
-# ROTATION LOGIC
-# =========================================================
 portfolio_rotation:
   disable_rotation_exits: false
 
@@ -165,28 +141,26 @@ portfolio_rotation:
   stale_held_edge_threshold: 0.06
   stale_held_recovery_edge_threshold: 0.08
 
-# =========================================================
-# HOLD LOGIC
-# =========================================================
 portfolio_hold:
   min_edge_to_hold: 0.08
   require_actionable_to_hold: true
+
 exit:
-  # Core thresholds (slightly tighter)
+  # Core thresholds
   hard_stop_loss_pct: -0.08
   early_stop_loss_pct: -0.05
   profit_lock_pct: 0.08
   soft_profit_lock_pct: 0.05
 
-  # Thesis thresholds (slightly stricter)
+  # Thesis thresholds
   edge_collapse_threshold: -0.02
   weak_edge_threshold: 0.05
   fair_value_drop_threshold: -0.03
   weak_edge_confirm_cycles: 2
   weak_fair_confirm_cycles: 2
 
-  # 🔥 KEY CHANGE — faster reaction
-  min_hold_minutes: 4
+  # Execution gating
+  min_hold_minutes: 2
   min_profit_exit_pct: 0.0
   max_exit_spread: 0.30
 
@@ -203,201 +177,17 @@ exit:
 
   enable_micro_stop: false
   micro_stop_loss_pct: -0.05
+
   enable_time_based_exit: false
   time_based_exit_hours_left: 8.0
   time_based_min_pnl_pct: -0.01
 
-  # 🔥 AGGRESSIVE LIFECYCLE SETTINGS
-  stale_exit_minutes: 12
-  red_persist_exit_pct: -0.03
-  deep_red_exit_pct: -0.06
-  flat_profit_exit_pct: 0.005
-  stagnant_profit_cap_pct: 0.02
+  # Aggressive lifecycle generation
+  stale_exit_minutes: 8
+  red_persist_exit_pct: -0.02
+  deep_red_exit_pct: -0.05
+  flat_profit_exit_pct: 0.003
+  stagnant_profit_cap_pct: 0.015
   weak_hold_edge_threshold: 0.14
   stale_edge_threshold: 0.20
-  spread_hard_block_multiplier: 1.8
-  weak_hold_edge_threshold: 0.10
-  stale_edge_threshold: 0.15
-  spread_hard_block_multiplier: 1.8
-# =========================================================
-kalshi:
-  api_base: "https://api.elections.kalshi.com/trade-api/v2"
-  series_ticker: "KXWTI"
-  event_ticker: null
-  exact_market_ticker: null
-
-# =========================================================
-# CONTRACT / RESOLUTION
-# =========================================================
-contract:
-  fallback_resolution_mode: "today_5pm_et"
-
-# =========================================================
-# MARKET DATA
-# =========================================================
-market_data:
-  yahoo_oil_symbols:
-    - "CL=F"
-    - "USO"
-
-# =========================================================
-# MODEL CONFIG
-# =========================================================
-model:
-  drift: 0.0
-  drift_window: 30
-  min_annualized_drift: -0.25
-  max_annualized_drift: 0.25
-
-  vol_short_window: 10
-  vol_medium_window: 30
-  vol_short_weight: 0.6
-  vol_medium_weight: 0.4
-
-  vol_trading_periods_per_year: 252
-
-  min_annualized_vol: 0.05
-  max_annualized_vol: 0.80
-  annualized_volatility_fallback: 0.25
-
-  prob_floor: 0.001
-  prob_cap: 0.999
-
-  blend_terminal_weight: 1.0
-  blend_touch_weight: 0.0
-
-  touch_paths: 2000
-  touch_steps: 40
-
-# =========================================================
-# TRADING PHASES
-# =========================================================
-trading_phases:
-  observe_only_above_hours: 72
-  active_trading_above_hours: 12
-
-# =========================================================
-# LIQUIDITY FILTERS
-# =========================================================
-filters:
-  min_bid: 0.01
-  min_ask: 0.01
-  require_two_sided_quotes: false
-
-  max_yes_spread: 0.25
-  max_no_spread: 0.25
-
-  strike_band_below: 10
-  strike_band_above: 10
-  max_abs_distance: 10
-
-  use_dynamic_distance: true
-  distance_vol_multiplier: 1.0
-  min_distance: 5
-  max_distance: 20
-
-# =========================================================
-# PORTFOLIO (UPDATED)
-# =========================================================
-portfolio:
-  allow_multiple_positions: true
-  strict_single_event_mode: false
-
-  # Position limits
-  max_open_trades: 3
-  max_positions_per_event: 3
-  max_same_side_positions_per_event: 2
-
-  # Capital
-  starting_capital: 50.0
-  max_total_deploy_fraction: 0.60
-  reserve_cash_fraction: 0.40
-  max_single_trade_fraction: 0.20
-
-  min_trade_dollars: 3.0
-  max_dollars_per_trade: 10.0
-
-  # Risk protection
-  stop_trading_if_balance_below: 5.0
-
-  # Entry threshold
-  min_edge_to_add: 0.10
-
-  # 🔥 PHASE FIX — allow late-session entries too
-  allowed_entry_trading_phases:
-    - ACTIVE_TRADING
-    - CLOSE_ONLY
-  allowed_entry_trading_phases_when_flat:
-    - ACTIVE_TRADING
-    - CLOSE_ONLY
-
-  # Anti-clustering (RELAXED BUT SAFE)
-  min_strike_gap_same_event: 1.0
-  allow_same_event_same_side_add: true
-
-# =========================================================
-# ROTATION LOGIC
-# =========================================================
-portfolio_rotation:
-  disable_rotation_exits: false
-
-  min_edge_improvement: 0.08
-  held_min_edge_to_keep: 0.10
-
-  stale_held_edge_threshold: 0.06
-  stale_held_recovery_edge_threshold: 0.08
-
-# =========================================================
-# HOLD LOGIC
-# =========================================================
-portfolio_hold:
-  min_edge_to_hold: 0.08
-  require_actionable_to_hold: true
-exit:
-  # Core thresholds (slightly tighter)
-  hard_stop_loss_pct: -0.08
-  early_stop_loss_pct: -0.05
-  profit_lock_pct: 0.08
-  soft_profit_lock_pct: 0.05
-
-  # Thesis thresholds (slightly stricter)
-  edge_collapse_threshold: -0.02
-  weak_edge_threshold: 0.05
-  fair_value_drop_threshold: -0.03
-  weak_edge_confirm_cycles: 2
-  weak_fair_confirm_cycles: 2
-
-  # 🔥 KEY CHANGE — faster reaction
-  min_hold_minutes: 4
-  min_profit_exit_pct: 0.0
-  max_exit_spread: 0.30
-
-  allow_not_tradable_red_exit: true
-  allow_non_executable_red_exit: true
-  allow_stagnation_exit: false
-  stagnation_min_profit: 0.02
-
-  hold_to_expiry_enabled: false
-  hold_to_expiry_hours_left: 2.0
-
-  emergency_stop_loss_pct: -0.85
-  emergency_price_move: -0.35
-
-  enable_micro_stop: false
-  micro_stop_loss_pct: -0.05
-  enable_time_based_exit: false
-  time_based_exit_hours_left: 8.0
-  time_based_min_pnl_pct: -0.01
-
-  # 🔥 AGGRESSIVE LIFECYCLE SETTINGS
-  stale_exit_minutes: 12
-  red_persist_exit_pct: -0.03
-  deep_red_exit_pct: -0.06
-  flat_profit_exit_pct: 0.005
-  stagnant_profit_cap_pct: 0.02
-  weak_hold_edge_threshold: 0.14
-  stale_edge_threshold: 0.20
-  spread_hard_block_multiplier: 1.8
-  weak_hold_edge_threshold: 0.10
-  stale_edge_threshold: 0.15
   spread_hard_block_multiplier: 1.8
