@@ -1944,15 +1944,27 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         momentum_short = float(momentum_features.get("oil_momentum_short", 0.0))
         momentum_medium = float(momentum_features.get("oil_momentum_medium", 0.0))
         momentum_regime = str(momentum_features.get("oil_momentum_regime", "NEUTRAL"))
-        momentum_block_threshold = float(model_cfg.get("momentum_block_threshold", 0.0010))
         momentum_pass = True
         momentum_block_reason = ""
-        if selected_side == "YES" and momentum_short < -momentum_block_threshold:
-            momentum_pass = False
-            momentum_block_reason = "bearish_momentum_block"
-        elif selected_side == "NO" and momentum_short > momentum_block_threshold:
-            momentum_pass = False
-            momentum_block_reason = "bullish_momentum_block"
+
+        if selected_side == "YES":
+            if not (momentum_short > 0.0 and momentum_medium >= 0.0):
+                momentum_pass = False
+                if momentum_short <= 0.0 and momentum_medium < 0.0:
+                    momentum_block_reason = "yes_block_short_and_medium_bearish"
+                elif momentum_short <= 0.0:
+                    momentum_block_reason = "yes_block_short_not_bullish"
+                else:
+                    momentum_block_reason = "yes_block_medium_bearish"
+        elif selected_side == "NO":
+            if not (momentum_short < 0.0 and momentum_medium <= 0.0):
+                momentum_pass = False
+                if momentum_short >= 0.0 and momentum_medium > 0.0:
+                    momentum_block_reason = "no_block_short_and_medium_bullish"
+                elif momentum_short >= 0.0:
+                    momentum_block_reason = "no_block_short_not_bearish"
+                else:
+                    momentum_block_reason = "no_block_medium_bullish"
 
         if not momentum_pass:
             selected_side_valid = False
