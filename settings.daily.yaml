@@ -116,7 +116,7 @@ portfolio:
   stop_trading_if_balance_below: 5.0
 
   # Entry threshold
-  min_edge_to_add: 0.10
+  min_edge_to_add: 0.12
 
   # Entry phases
   allowed_entry_trading_phases:
