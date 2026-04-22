@@ -16,6 +16,16 @@ from .ml_schema import (
 )
 
 
+def safe(row, key):
+    if row is None:
+        return None
+    try:
+        return row.get(key, None)
+    except Exception:
+        return None
+
+
+
 class JSONLWriter:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -78,20 +88,27 @@ class MLDataWriter:
         for idx, (_, row) in enumerate(ranked_df.iterrows()):
             ticker = str(row.get("contract_ticker") or "").strip()
             portfolio_action, portfolio_reason = action_lookup.get(ticker, (None, portfolio_plan.get("reason") if portfolio_plan else None))
-            records.append(
-                candidate_record_from_row(
-                    row=row,
-                    engine_name=self.engine_name,
-                    run_id=run_id,
-                    cycle_timestamp_et=cycle_timestamp_et,
-                    config_hash_value=cfg_hash,
-                    portfolio_action=portfolio_action,
-                    portfolio_reason=portfolio_reason,
-                    was_top_ranked=idx == 0,
-                    was_executed=ticker in executed_tickers,
-                    engine_version=self.engine_version,
-                )
+            record = candidate_record_from_row(
+                row=row,
+                engine_name=self.engine_name,
+                run_id=run_id,
+                cycle_timestamp_et=cycle_timestamp_et,
+                config_hash_value=cfg_hash,
+                portfolio_action=portfolio_action,
+                portfolio_reason=portfolio_reason,
+                was_top_ranked=idx == 0,
+                was_executed=ticker in executed_tickers,
+                engine_version=self.engine_version,
             )
+            record.update(
+                {
+                    "oil_momentum_short": safe(row, "oil_momentum_short"),
+                    "oil_momentum_medium": safe(row, "oil_momentum_medium"),
+                    "momentum_pass": safe(row, "momentum_pass"),
+                    "momentum_block_reason": safe(row, "momentum_block_reason"),
+                }
+            )
+            records.append(record)
 
         written = self.candidate_writer.append_many(records)
         logging.info("ML candidate snapshot written | rows=%s | path=%s", written, self.candidate_writer.path)
