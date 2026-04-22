@@ -1373,7 +1373,7 @@ def _eligible_tradable_candidates(ranked: pd.DataFrame, config: Dict[str, Any], 
 
     # NEW: STRICT OVERROUND FILTER
     tradable_df = tradable_df[
-        (tradable_df["overround"].isna()) | (tradable_df["overround"] <= 0.05)
+        (tradable_df["overround"].notna()) & (tradable_df["overround"] <= 0.05)
     ].copy()
 
     tradable_df = tradable_df.sort_values(
