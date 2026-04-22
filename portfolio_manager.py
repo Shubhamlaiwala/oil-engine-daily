@@ -1363,7 +1363,17 @@ def _eligible_tradable_candidates(ranked: pd.DataFrame, config: Dict[str, Any], 
     tradable_df = working[
         working["action_norm"].isin(["BUY_YES", "BUY_NO"])
         & (working["decision_state"] == "ACTIONABLE")
-        & (working["real_edge"] >= float(entry_cfg["min_edge_to_add"]))
+        & (working["real_edge"] >= max(0.12, float(entry_cfg["min_edge_to_add"])))
+    ].copy()
+
+    # NEW: STRICT MARKET FILTER
+    tradable_df = tradable_df[
+        tradable_df["market_too_wide"] == False
+    ].copy()
+
+    # NEW: STRICT OVERROUND FILTER
+    tradable_df = tradable_df[
+        (tradable_df["overround"].isna()) | (tradable_df["overround"] <= 0.05)
     ].copy()
 
     tradable_df = tradable_df.sort_values(
