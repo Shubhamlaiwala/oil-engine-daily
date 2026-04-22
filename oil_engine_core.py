@@ -493,6 +493,52 @@ def compute_dynamic_drift(history_df, config):
     return float(np.clip(annualized_drift, min_drift, max_drift))
 
 
+def compute_momentum_features(price, history_df, config):
+    model_cfg = config.get("model", {}) or {}
+    short_window = max(2, int(model_cfg.get("momentum_short_window", 3)))
+    medium_window = max(short_window + 1, int(model_cfg.get("momentum_medium_window", 5)))
+
+    default = {
+        "oil_momentum_short": 0.0,
+        "oil_momentum_medium": 0.0,
+        "oil_momentum_regime": "NEUTRAL",
+    }
+
+    try:
+        if history_df is None or history_df.empty or "close" not in history_df.columns:
+            return default
+
+        closes = pd.to_numeric(history_df["close"], errors="coerce").dropna().reset_index(drop=True)
+        if len(closes) < medium_window:
+            return default
+
+        latest_price = float(price) if price is not None and not pd.isna(price) else float(closes.iloc[-1])
+        short_base = float(closes.iloc[-short_window])
+        medium_base = float(closes.iloc[-medium_window])
+
+        if short_base <= 0 or medium_base <= 0:
+            return default
+
+        short_mom = (latest_price / short_base) - 1.0
+        medium_mom = (latest_price / medium_base) - 1.0
+
+        regime_threshold = float(model_cfg.get("momentum_regime_threshold", 0.0015))
+        if short_mom >= regime_threshold and medium_mom >= 0:
+            regime = "BULLISH"
+        elif short_mom <= -regime_threshold and medium_mom <= 0:
+            regime = "BEARISH"
+        else:
+            regime = "NEUTRAL"
+
+        return {
+            "oil_momentum_short": float(short_mom),
+            "oil_momentum_medium": float(medium_mom),
+            "oil_momentum_regime": regime,
+        }
+    except Exception:
+        return default
+
+
 def get_realized_volatility_cached(config):
     now = time.time()
     ttl = config["runtime"]["vol_cache_seconds"]
@@ -1567,6 +1613,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         )
     )
     dynamic_drift = compute_dynamic_drift(history_df, config)
+    momentum_features = compute_momentum_features(price, history_df, config)
 
     prob_floor = float(config["model"].get("prob_floor", 0.001))
     prob_cap = float(config["model"].get("prob_cap", 0.999))
@@ -1677,7 +1724,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         )
         fair_prob_blended = float(np.clip(fair_prob_blended, prob_floor, prob_cap))
 
-        decision_prob = float(np.clip(fair_prob_terminal, prob_floor, prob_cap))
+        decision_prob = float(np.clip(fair_prob_blended, prob_floor, prob_cap))
         fair_yes = decision_prob
         fair_no = 1.0 - decision_prob
 
@@ -1893,6 +1940,23 @@ def evaluate_ladder(price, contracts, vol_stats, config):
         )
         if not selected_side_consistent:
             selected_side_valid = False
+
+        momentum_short = float(momentum_features.get("oil_momentum_short", 0.0))
+        momentum_medium = float(momentum_features.get("oil_momentum_medium", 0.0))
+        momentum_regime = str(momentum_features.get("oil_momentum_regime", "NEUTRAL"))
+        momentum_block_threshold = float(model_cfg.get("momentum_block_threshold", 0.0010))
+        momentum_pass = True
+        momentum_block_reason = ""
+        if selected_side == "YES" and momentum_short < -momentum_block_threshold:
+            momentum_pass = False
+            momentum_block_reason = "bearish_momentum_block"
+        elif selected_side == "NO" and momentum_short > momentum_block_threshold:
+            momentum_pass = False
+            momentum_block_reason = "bullish_momentum_block"
+
+        if not momentum_pass:
+            selected_side_valid = False
+
         watchlist_candidate = bool(
             selected_side_tradeable
             and pd.notna(selected_edge)
@@ -2018,6 +2082,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and fair_yes >= 0.65
             and yes_conf == "HIGH"
             and selected_side_consistent
+            and momentum_pass
         )
         actionable_no = bool(
             (not market_too_wide)
@@ -2031,6 +2096,7 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             and fair_no >= 0.65
             and no_conf == "HIGH"
             and selected_side_consistent
+            and momentum_pass
         )
 
         if held_for_monitoring_only:
@@ -2044,6 +2110,12 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             action = "NO_TRADE"
             no_trade_reason = invalid_reason
             entry_style = "NONE"
+
+        elif not momentum_pass and selected_side in {"YES", "NO"}:
+            decision_state = "TIMING_BLOCKED"
+            action = "NO_TRADE"
+            no_trade_reason = momentum_block_reason or "MOMENTUM_BLOCK"
+            entry_style = "TIMING_FILTER"
 
         elif actionable_yes:
             decision_state = "ACTIONABLE"
@@ -2200,6 +2272,11 @@ def evaluate_ladder(price, contracts, vol_stats, config):
             "adjusted_volatility": adjusted_vol,
             "vol_regime": vol_regime,
             "dynamic_drift": dynamic_drift,
+            "oil_momentum_short": momentum_short,
+            "oil_momentum_medium": momentum_medium,
+            "oil_momentum_regime": momentum_regime,
+            "momentum_pass": momentum_pass,
+            "momentum_block_reason": momentum_block_reason,
             "fee_buffer": fee_buffer,
             "spread_buffer": spread_buffer,
             "safety_buffer": safety_buffer,
@@ -2286,6 +2363,10 @@ def evaluate_ladder(price, contracts, vol_stats, config):
                 "selected_edge",
                 "decision_state",
                 "trading_phase",
+                "oil_momentum_short",
+                "oil_momentum_medium",
+                "momentum_pass",
+                "momentum_block_reason",
                 "entry_style",
                 "action",
                 "market_too_wide",
@@ -2364,6 +2445,11 @@ def log_trade_candidates(ranked_df, market_contracts_df, price, price_src, vol_s
         "fair_prob_touch",
         "fair_prob_blended",
         "dynamic_drift",
+        "oil_momentum_short",
+        "oil_momentum_medium",
+        "oil_momentum_regime",
+        "momentum_pass",
+        "momentum_block_reason",
         "raw_edge_yes",
         "raw_edge_no",
         "target_yes_price",
