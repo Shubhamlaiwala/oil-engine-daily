@@ -47,6 +47,7 @@ def upload_file(local_path, r2_key):
 
 def upload_ml_logs():
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    run_id = os.getenv("RUN_ID", "RUN_UNKNOWN")
 
     files = [
         "logs/ml/ml_candidate_dataset.jsonl",
@@ -55,5 +56,5 @@ def upload_ml_logs():
 
     for f in files:
         if os.path.exists(f):
-            r2_key = f"{today}/{f}"
+            r2_key = f"{run_id}/{today}/{f}"
             upload_file(f, r2_key)
