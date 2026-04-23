@@ -990,7 +990,32 @@ def _apply_entry_fill_to_paper_positions(
             "status": "OPEN",
             "allocation": allocation,
             "reason": safe_str(intent.get("reason")),
-            "confidence": safe_str((intent.get("metadata") or {}).get("confidence")),
+            "confidence": safe_str(intent.get("confidence") or (intent.get("metadata") or {}).get("confidence")),
+            "selected_edge": safe_float(intent.get("selected_edge"), None),
+            "decision_prob": safe_float(intent.get("decision_prob"), None),
+            "fair_prob_terminal": safe_float(intent.get("fair_prob_terminal"), None),
+            "fair_prob_blended": safe_float(intent.get("fair_prob_blended"), None),
+            "overround": safe_float(intent.get("overround"), None),
+            "market_too_wide": bool(intent.get("market_too_wide", False)),
+            "distance_to_strike": safe_float(intent.get("distance_to_strike"), None),
+            "distance_abs": safe_float(intent.get("distance_abs"), None),
+            "trading_phase": safe_str(intent.get("trading_phase")),
+            "entry_style": safe_str(intent.get("entry_style")),
+            "selected_side": safe_str(intent.get("selected_side")),
+            "confidence_norm": safe_str(intent.get("confidence_norm")),
+            "oil_momentum_short": safe_float(intent.get("oil_momentum_short"), None),
+            "oil_momentum_medium": safe_float(intent.get("oil_momentum_medium"), None),
+            "oil_momentum_regime": safe_str(intent.get("oil_momentum_regime")),
+            "momentum_pass": intent.get("momentum_pass"),
+            "momentum_block_reason": safe_str(intent.get("momentum_block_reason")),
+            "event_ticker": safe_str(intent.get("event_ticker")),
+            "series_ticker": safe_str(intent.get("series_ticker")),
+            "strike": safe_float(intent.get("strike"), None),
+            "ask_yes": safe_float(intent.get("ask_yes"), None),
+            "ask_no": safe_float(intent.get("ask_no"), None),
+            "bid_yes": safe_float(intent.get("bid_yes"), None),
+            "bid_no": safe_float(intent.get("bid_no"), None),
+            "yes_no_ask_sum": safe_float(intent.get("yes_no_ask_sum"), None),
         }
         records.append(position)
 
@@ -1021,6 +1046,32 @@ def _apply_entry_fill_to_paper_positions(
         existing["allocation"] = new_allocation
         existing["updated_at"] = now_ts
         existing["status"] = "OPEN"
+        existing["selected_edge"] = safe_float(intent.get("selected_edge"), existing.get("selected_edge"))
+        existing["decision_prob"] = safe_float(intent.get("decision_prob"), existing.get("decision_prob"))
+        existing["fair_prob_terminal"] = safe_float(intent.get("fair_prob_terminal"), existing.get("fair_prob_terminal"))
+        existing["fair_prob_blended"] = safe_float(intent.get("fair_prob_blended"), existing.get("fair_prob_blended"))
+        existing["overround"] = safe_float(intent.get("overround"), existing.get("overround"))
+        existing["market_too_wide"] = bool(intent.get("market_too_wide", existing.get("market_too_wide", False)))
+        existing["distance_to_strike"] = safe_float(intent.get("distance_to_strike"), existing.get("distance_to_strike"))
+        existing["distance_abs"] = safe_float(intent.get("distance_abs"), existing.get("distance_abs"))
+        existing["trading_phase"] = safe_str(intent.get("trading_phase") or existing.get("trading_phase"))
+        existing["entry_style"] = safe_str(intent.get("entry_style") or existing.get("entry_style"))
+        existing["selected_side"] = safe_str(intent.get("selected_side") or existing.get("selected_side"))
+        existing["confidence"] = safe_str(intent.get("confidence") or existing.get("confidence"))
+        existing["confidence_norm"] = safe_str(intent.get("confidence_norm") or existing.get("confidence_norm"))
+        existing["oil_momentum_short"] = safe_float(intent.get("oil_momentum_short"), existing.get("oil_momentum_short"))
+        existing["oil_momentum_medium"] = safe_float(intent.get("oil_momentum_medium"), existing.get("oil_momentum_medium"))
+        existing["oil_momentum_regime"] = safe_str(intent.get("oil_momentum_regime") or existing.get("oil_momentum_regime"))
+        existing["momentum_pass"] = intent.get("momentum_pass", existing.get("momentum_pass"))
+        existing["momentum_block_reason"] = safe_str(intent.get("momentum_block_reason") or existing.get("momentum_block_reason"))
+        existing["event_ticker"] = safe_str(intent.get("event_ticker") or existing.get("event_ticker"))
+        existing["series_ticker"] = safe_str(intent.get("series_ticker") or existing.get("series_ticker"))
+        existing["strike"] = safe_float(intent.get("strike"), existing.get("strike"))
+        existing["ask_yes"] = safe_float(intent.get("ask_yes"), existing.get("ask_yes"))
+        existing["ask_no"] = safe_float(intent.get("ask_no"), existing.get("ask_no"))
+        existing["bid_yes"] = safe_float(intent.get("bid_yes"), existing.get("bid_yes"))
+        existing["bid_no"] = safe_float(intent.get("bid_no"), existing.get("bid_no"))
+        existing["yes_no_ask_sum"] = safe_float(intent.get("yes_no_ask_sum"), existing.get("yes_no_ask_sum"))
         records[idx] = existing
 
         logging.info(
@@ -1850,7 +1901,7 @@ def format_trade_alert(row, oil_price, config):
     hours_left_text = f"{float(hours_left):.2f}" if pd.notna(hours_left) else "N/A"
 
     msg = (
-        "🚨 KALSHI OIL TRADE SIGNAL\n\n"
+        "ðŸš¨ KALSHI OIL TRADE SIGNAL\n\n"
         f"Contract: {ticker}\n"
         f"Action: {action}\n"
         f"Strike: {strike:.2f}\n"
@@ -2139,7 +2190,7 @@ def format_watchlist_alert(row, oil_price, config):
     fair_prob = pick_model_prob_from_row(row, None)
 
     alert_type = build_watchlist_alert_type(row)
-    title = "👀 OIL WATCHLIST ALERT"
+    title = "ðŸ‘€ OIL WATCHLIST ALERT"
 
     if alert_type == "watchlist_wait_for_price":
         reason_line = "Setup is interesting, but current price has not reached your target yet."
@@ -2328,7 +2379,7 @@ def format_portfolio_alert(plan, config):
     actions = p.get("actions") or []
 
     lines = [
-        "🚀 Oil Portfolio Signal",
+        "ðŸš€ Oil Portfolio Signal",
         "",
         f"Recommendation: {p.get('recommendation')}",
         f"Reason: {p.get('reason')}",
@@ -2571,7 +2622,7 @@ def format_exit_alert(row, config):
     fair_entry_text = f"{float(fair_entry):.3f}" if pd.notna(fair_entry) else "N/A"
 
     msg = (
-        "⚠️ KALSHI OIL EXIT ALERT\n\n"
+        "âš ï¸ KALSHI OIL EXIT ALERT\n\n"
         f"Contract: {ticker}\n"
         f"Action Held: {action}\n"
         f"Strike: {strike:.2f}\n\n"
@@ -4951,7 +5002,7 @@ def record_status_alert_sent(status_type, payload=None):
 
 def format_status_alert(status_type, payload=None):
     payload = payload or {}
-    lines = [f"â„¹ï¸ ENGINE STATUS: {status_type.upper()}"]
+    lines = [f"Ã¢â€žÂ¹Ã¯Â¸Â ENGINE STATUS: {status_type.upper()}"]
     if payload:
         lines.append("")
         for key in sorted(payload.keys()):
@@ -5661,7 +5712,7 @@ def format_status_message(state: Dict[str, Any]) -> str:
     ts = current_time_et().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     return (
-        "📍 OIL ENGINE STATUS\n\n"
+        "ðŸ“ OIL ENGINE STATUS\n\n"
         f"State: {engine_state}\n"
         f"Oil Price: {oil_price}\n"
         f"Volatility: {volatility}\n"
@@ -5682,7 +5733,7 @@ def format_positions_message(state: Dict[str, Any]) -> str:
     exit_df = state.get("last_exit_df", pd.DataFrame())
 
     if positions_df is None or positions_df.empty:
-        return "📦 LIVE POSITIONS\n\nNo open Kalshi positions currently tracked."
+        return "ðŸ“¦ LIVE POSITIONS\n\nNo open Kalshi positions currently tracked."
 
     working_df = positions_df.copy()
 
@@ -5719,7 +5770,7 @@ def format_positions_message(state: Dict[str, Any]) -> str:
 
     working_df = working_df.drop_duplicates(subset=["contract_ticker"]).copy()
 
-    lines = ["📦 LIVE POSITIONS", ""]
+    lines = ["ðŸ“¦ LIVE POSITIONS", ""]
 
     for _, row in working_df.iterrows():
         ticker = safe_str(row.get("contract_ticker")) or "N/A"
@@ -5768,7 +5819,7 @@ def format_latest_trade_message(state: Dict[str, Any]) -> str:
     best_trade = get_best_actionable_trade(results)
 
     if best_trade is None:
-        return "📈 LATEST ACTIONABLE TRADE\n\nNo actionable ranked trade candidates available."
+        return "ðŸ“ˆ LATEST ACTIONABLE TRADE\n\nNo actionable ranked trade candidates available."
 
     action = safe_upper(best_trade.get("action"))
     edge_value = safe_float(
@@ -5802,7 +5853,7 @@ def format_latest_trade_message(state: Dict[str, Any]) -> str:
             break
 
     return (
-        "📈 LATEST ACTIONABLE TRADE\n\n"
+        "ðŸ“ˆ LATEST ACTIONABLE TRADE\n\n"
         f"Ticker: {safe_str(best_trade.get('contract_ticker')) or 'N/A'}\n"
         f"Action: {action or 'N/A'}\n"
         f"Strike: {strike}\n"
@@ -5832,12 +5883,12 @@ def handle_telegram_command(command_text: str, chat_id: str, state: Dict[str, An
 
     if command == "/pause":
         state["paused"] = True
-        send_telegram_alert("â¸ï¸ Bot paused successfully.", chat_id=chat_id)
+        send_telegram_alert("Ã¢ÂÂ¸Ã¯Â¸Â Bot paused successfully.", chat_id=chat_id)
         return
 
     if command == "/resume":
         state["paused"] = False
-        send_telegram_alert("▶️ Bot resumed successfully.", chat_id=chat_id)
+        send_telegram_alert("â–¶ï¸ Bot resumed successfully.", chat_id=chat_id)
         return
 
     send_telegram_alert(
