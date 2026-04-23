@@ -102,6 +102,15 @@ ACTION_METADATA_FIELDS = [
     "series_ticker",
     "strike",
     "resolution_time_et",
+    "event_ticker",
+    "series_ticker",
+    "strike",
+    "resolution_time_et",
+    "oil_momentum_short",
+    "oil_momentum_medium",
+    "oil_momentum_regime",
+    "momentum_pass",
+    "momentum_block_reason",
 ]
 
 DEFAULT_MAX_CAPITAL_DEPLOY = 10.0
