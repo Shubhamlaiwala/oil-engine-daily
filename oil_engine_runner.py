@@ -679,21 +679,25 @@ def _append_trade_outcome_for_closed_position(
     ticker = safe_str(position_before_close.get("ticker"))
     side = safe_upper(position_before_close.get("side"))
     entry_price = safe_float(position_before_close.get("entry_price"), None)
-    if entry_price is None:
+
+    if not ticker or side not in {"YES", "NO"} or entry_price is None:
         return None
 
     exit_ts = safe_float(exit_timestamp_ts, time.time())
     entry_ts = safe_float(position_before_close.get("entry_time"), None)
+
     entry_timestamp_et = _et_iso_from_ts(entry_ts) or current_time_et().isoformat()
     exit_timestamp_et = _et_iso_from_ts(exit_ts) or current_time_et().isoformat()
 
     effective_exit_price = safe_float(exit_price, None)
     if effective_exit_price is None:
-        effective_exit_price = safe_float(settlement_value, entry_price)
+        effective_exit_price = safe_float(settlement_value, None)
     if effective_exit_price is None:
         effective_exit_price = entry_price
 
-    realized_pnl = (float(effective_exit_price) - float(entry_price)) * int(closed_contracts)
+    contracts_int = int(closed_contracts)
+    realized_pnl = (float(effective_exit_price) - float(entry_price)) * contracts_int
+
     realized_return = None
     if entry_price not in (None, 0):
         try:
@@ -703,7 +707,10 @@ def _append_trade_outcome_for_closed_position(
 
     hold_minutes = None
     if entry_ts is not None and exit_ts is not None:
-        hold_minutes = max(0.0, (float(exit_ts) - float(entry_ts)) / 60.0)
+        try:
+            hold_minutes = max(0.0, (float(exit_ts) - float(entry_ts)) / 60.0)
+        except Exception:
+            hold_minutes = None
 
     trade_id = build_trade_id(
         contract_ticker=ticker,
@@ -715,7 +722,7 @@ def _append_trade_outcome_for_closed_position(
         trade_id=trade_id,
         contract_ticker=ticker,
         side=side,
-        contracts=int(closed_contracts),
+        contracts=contracts_int,
         entry_timestamp_et=entry_timestamp_et,
         exit_timestamp_et=exit_timestamp_et,
         entry_price=entry_price,
@@ -731,19 +738,65 @@ def _append_trade_outcome_for_closed_position(
         config_hash_value=config_hash(config),
         engine_version="v1",
     )
+
+    record.update({
+        "selected_edge": safe_float(position_before_close.get("selected_edge"), None),
+        "decision_prob": safe_float(position_before_close.get("decision_prob"), None),
+        "fair_prob_terminal": safe_float(position_before_close.get("fair_prob_terminal"), None),
+        "fair_prob_blended": safe_float(position_before_close.get("fair_prob_blended"), None),
+        "overround": safe_float(position_before_close.get("overround"), None),
+        "market_too_wide": bool(position_before_close.get("market_too_wide", False)),
+        "distance_to_strike": safe_float(position_before_close.get("distance_to_strike"), None),
+        "distance_abs": safe_float(position_before_close.get("distance_abs"), None),
+        "trading_phase": safe_str(position_before_close.get("trading_phase")),
+        "entry_style": safe_str(position_before_close.get("entry_style")),
+        "selected_side": safe_str(position_before_close.get("selected_side")),
+        "confidence": safe_str(position_before_close.get("confidence")),
+        "confidence_norm": safe_str(position_before_close.get("confidence_norm")),
+        "oil_momentum_short": safe_float(position_before_close.get("oil_momentum_short"), None),
+        "oil_momentum_medium": safe_float(position_before_close.get("oil_momentum_medium"), None),
+        "oil_momentum_regime": safe_str(position_before_close.get("oil_momentum_regime")),
+        "momentum_pass": position_before_close.get("momentum_pass"),
+        "momentum_block_reason": safe_str(position_before_close.get("momentum_block_reason")),
+        "event_ticker": safe_str(position_before_close.get("event_ticker")),
+        "series_ticker": safe_str(position_before_close.get("series_ticker")),
+        "strike": safe_float(position_before_close.get("strike"), None),
+        "ask_yes": safe_float(position_before_close.get("ask_yes"), None),
+        "ask_no": safe_float(position_before_close.get("ask_no"), None),
+        "bid_yes": safe_float(position_before_close.get("bid_yes"), None),
+        "bid_no": safe_float(position_before_close.get("bid_no"), None),
+        "yes_no_ask_sum": safe_float(position_before_close.get("yes_no_ask_sum"), None),
+        "outcome_label": (
+            "win"
+            if realized_pnl > 1e-12
+            else "loss"
+            if realized_pnl < -1e-12
+            else "breakeven"
+        ),
+    })
+
     _pending_trade_outcomes_store(state).append(record)
     _update_trade_stats_for_outcome(state, realized_pnl)
+
     logging.info(
-        "Queued trade outcome | ticker=%s | side=%s | contracts=%s | realized_pnl=%s | exit_reason=%s | settled=%s",
+        "Queued enriched trade outcome | ticker=%s | side=%s | contracts=%s | "
+        "realized_pnl=%s | hold_minutes=%s | exit_reason=%s | settled=%s | "
+        "selected_edge=%s | overround=%s | momentum_short=%s | momentum_medium=%s | outcome=%s",
         ticker,
         side,
-        closed_contracts,
+        contracts_int,
         realized_pnl,
+        hold_minutes,
         exit_reason,
         settled,
+        record.get("selected_edge"),
+        record.get("overround"),
+        record.get("oil_momentum_short"),
+        record.get("oil_momentum_medium"),
+        record.get("outcome_label"),
     )
-    return record
 
+    return record
 
 def flush_pending_trade_outcomes(
     *,
