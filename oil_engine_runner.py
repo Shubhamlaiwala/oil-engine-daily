@@ -2814,14 +2814,66 @@ def build_order_payload_from_execution_action(action: Dict[str, Any]) -> Dict[st
         "submission_attempts": 0,
         "heartbeat_count": 0,
         "signature": build_execution_action_signature(action),
+
+        # --- carry enriched entry metadata at top level ---
+        "confidence": safe_upper(action.get("confidence")),
+        "selected_edge": safe_float(action.get("selected_edge"), None),
+        "edge": safe_float(action.get("edge"), None),
+        "decision_prob": safe_float(action.get("decision_prob"), None),
+        "fair_prob_terminal": safe_float(action.get("fair_prob_terminal"), None),
+        "fair_prob_blended": safe_float(action.get("fair_prob_blended"), None),
+        "overround": safe_float(action.get("overround"), None),
+        "market_too_wide": action.get("market_too_wide"),
+        "no_trade_reason": safe_str(action.get("no_trade_reason")),
+        "distance_to_strike": safe_float(action.get("distance_to_strike"), None),
+        "distance_abs": safe_float(action.get("distance_abs"), None),
+        "trading_phase": safe_str(action.get("trading_phase")),
+        "entry_style": safe_str(action.get("entry_style")),
+        "selected_side": safe_str(action.get("selected_side")),
+        "confidence_norm": safe_str(action.get("confidence_norm")),
+        "oil_momentum_short": safe_float(action.get("oil_momentum_short"), None),
+        "oil_momentum_medium": safe_float(action.get("oil_momentum_medium"), None),
+        "oil_momentum_regime": safe_str(action.get("oil_momentum_regime")),
+        "momentum_pass": action.get("momentum_pass"),
+        "momentum_block_reason": safe_str(action.get("momentum_block_reason")),
+        "event_ticker": safe_str(action.get("event_ticker")),
+        "series_ticker": safe_str(action.get("series_ticker")),
+        "strike": safe_float(action.get("strike"), None),
+        "ask_yes": safe_float(action.get("ask_yes"), None),
+        "ask_no": safe_float(action.get("ask_no"), None),
+        "bid_yes": safe_float(action.get("bid_yes"), None),
+        "bid_no": safe_float(action.get("bid_no"), None),
+        "yes_no_ask_sum": safe_float(action.get("yes_no_ask_sum"), None),
+
         "metadata": {
             "confidence": safe_upper(action.get("confidence")),
             "edge": safe_float(action.get("edge"), None),
+            "selected_edge": safe_float(action.get("selected_edge"), None),
             "decision_prob": safe_float(action.get("decision_prob"), None),
             "fair_prob_terminal": safe_float(action.get("fair_prob_terminal"), None),
             "fair_prob_blended": safe_float(action.get("fair_prob_blended"), None),
+            "overround": safe_float(action.get("overround"), None),
             "market_too_wide": action.get("market_too_wide"),
             "no_trade_reason": safe_str(action.get("no_trade_reason")),
+            "distance_to_strike": safe_float(action.get("distance_to_strike"), None),
+            "distance_abs": safe_float(action.get("distance_abs"), None),
+            "trading_phase": safe_str(action.get("trading_phase")),
+            "entry_style": safe_str(action.get("entry_style")),
+            "selected_side": safe_str(action.get("selected_side")),
+            "confidence_norm": safe_str(action.get("confidence_norm")),
+            "oil_momentum_short": safe_float(action.get("oil_momentum_short"), None),
+            "oil_momentum_medium": safe_float(action.get("oil_momentum_medium"), None),
+            "oil_momentum_regime": safe_str(action.get("oil_momentum_regime")),
+            "momentum_pass": action.get("momentum_pass"),
+            "momentum_block_reason": safe_str(action.get("momentum_block_reason")),
+            "event_ticker": safe_str(action.get("event_ticker")),
+            "series_ticker": safe_str(action.get("series_ticker")),
+            "strike": safe_float(action.get("strike"), None),
+            "ask_yes": safe_float(action.get("ask_yes"), None),
+            "ask_no": safe_float(action.get("ask_no"), None),
+            "bid_yes": safe_float(action.get("bid_yes"), None),
+            "bid_no": safe_float(action.get("bid_no"), None),
+            "yes_no_ask_sum": safe_float(action.get("yes_no_ask_sum"), None),
         },
     }
 
@@ -2990,6 +3042,7 @@ def build_execution_action_record(
         "allocation": safe_float(allocation, 0.0),
         "ask_price": safe_float(ask_price, None),
         "edge": safe_float(edge, None),
+        "selected_edge": safe_float(edge, None),  # important for paper position persistence
         "confidence": safe_upper(confidence),
         "reason": safe_str(reason),
         "decision_prob": safe_float(decision_prob, None),
@@ -3001,13 +3054,18 @@ def build_execution_action_record(
         "execution_state": safe_upper(execution_state),
         "execution_reason": safe_str(execution_reason),
     }
+
     if extra:
         action.update(extra)
+
+    # keep selected_edge aligned if upstream explicitly passed one
+    if action.get("selected_edge") is None:
+        action["selected_edge"] = safe_float(action.get("edge"), None)
+
     action["order_intent"] = build_order_payload_from_execution_action(action)
     action["action_key"] = build_execution_action_key(action["action_type"], action["ticker"], action["side"])
     action["signature"] = build_execution_action_signature(action)
     return action
-
 
 
 def _resolve_live_held_side_for_ticker(
@@ -3243,6 +3301,30 @@ def build_portfolio_execution_actions(portfolio_plan: Optional[Dict[str, Any]]) 
         if not action_type:
             continue
 
+        common_extra = {
+            "selected_edge": safe_float(row.get("selected_edge", row.get("edge")), None),
+            "overround": safe_float(row.get("overround"), None),
+            "distance_to_strike": safe_float(row.get("distance_to_strike"), None),
+            "distance_abs": safe_float(row.get("distance_abs"), None),
+            "trading_phase": safe_str(row.get("trading_phase")),
+            "entry_style": safe_str(row.get("entry_style")),
+            "selected_side": safe_str(row.get("selected_side")),
+            "confidence_norm": safe_str(row.get("confidence_norm")),
+            "oil_momentum_short": safe_float(row.get("oil_momentum_short"), None),
+            "oil_momentum_medium": safe_float(row.get("oil_momentum_medium"), None),
+            "oil_momentum_regime": safe_str(row.get("oil_momentum_regime")),
+            "momentum_pass": row.get("momentum_pass"),
+            "momentum_block_reason": safe_str(row.get("momentum_block_reason")),
+            "event_ticker": safe_str(row.get("event_ticker")),
+            "series_ticker": safe_str(row.get("series_ticker")),
+            "strike": safe_float(row.get("strike"), None),
+            "ask_yes": safe_float(row.get("ask_yes"), None),
+            "ask_no": safe_float(row.get("ask_no"), None),
+            "bid_yes": safe_float(row.get("bid_yes"), None),
+            "bid_no": safe_float(row.get("bid_no"), None),
+            "yes_no_ask_sum": safe_float(row.get("yes_no_ask_sum"), None),
+        }
+
         if action_type == "ENTER":
             actions.append(
                 build_execution_action_record(
@@ -3261,6 +3343,7 @@ def build_portfolio_execution_actions(portfolio_plan: Optional[Dict[str, Any]]) 
                     source="portfolio_manager",
                     market_too_wide=row.get("market_too_wide"),
                     no_trade_reason=row.get("no_trade_reason"),
+                    extra=common_extra,
                 )
             )
         elif action_type == "HOLD":
@@ -3281,6 +3364,7 @@ def build_portfolio_execution_actions(portfolio_plan: Optional[Dict[str, Any]]) 
                     source="portfolio_manager",
                     market_too_wide=row.get("market_too_wide"),
                     no_trade_reason=row.get("no_trade_reason"),
+                    extra=common_extra,
                 )
             )
         elif action_type == "EXIT":
@@ -3301,6 +3385,7 @@ def build_portfolio_execution_actions(portfolio_plan: Optional[Dict[str, Any]]) 
                     source="portfolio_manager",
                     market_too_wide=row.get("market_too_wide"),
                     no_trade_reason=row.get("no_trade_reason"),
+                    extra=common_extra,
                 )
             )
 
