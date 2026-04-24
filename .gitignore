@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+logs/
+*.log
+*.jsonl
+.env
+.DS_Store
+paper_positions.json
+execution_state.json
